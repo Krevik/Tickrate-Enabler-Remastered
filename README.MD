@@ -90,6 +90,10 @@ with a console message (the rest of the plugin keeps working). Disable them with
 
 ### Changelog / TODO
 
+1.7.1 (Remastered fork):
+- First public release of the fork (1.7.0 was tagged, but its Linux build failed, so it was never released).
+- Linux build fix: older clang no longer fails on SDK warning flags it doesn't know.
+
 1.7.0 (Remastered fork):
 - L4D2: NextBot fixes for lowered `nb_update_frequency` (infected collision push, witch victim switching,
   witch contact anger).
