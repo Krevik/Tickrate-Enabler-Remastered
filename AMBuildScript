@@ -243,6 +243,9 @@ class ExtensionConfig(object):
       else:
         cxx.cxxflags += ['-Wno-deprecated']
       cxx.cflags += ['-Wno-sometimes-uninitialized']
+      # hl2sdk-manifests (l4d2) passes -Wno-nontrivial-memcall, which only exists in clang >= 20;
+      # don't let -Werror turn that into a build failure on older clang (e.g. 18 on Ubuntu 24.04).
+      cxx.cflags += ['-Wno-unknown-warning-option']
 
     # Work around SDK warnings.
     if cxx.version >= 'clang-10.0' or cxx.version >= 'apple-clang-12.0':
