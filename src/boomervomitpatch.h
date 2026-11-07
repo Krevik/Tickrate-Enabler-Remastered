@@ -41,12 +41,13 @@
 class BoomerVomitFrameTimePatch : public ICodePatch
 {
 public:
-	BoomerVomitFrameTimePatch(IServerGameDLL* gamedll);
+	// realGlobals: the game's real gpGlobals, used to verify that patched instructions read it.
+	BoomerVomitFrameTimePatch(IServerGameDLL* gamedll, const void* realGlobals);
 	~BoomerVomitFrameTimePatch();
 	void Patch();
 	void Unpatch();
 private:
-	void InitializeBinPatches(IServerGameDLL* gamedll);
+	void InitializeBinPatches(IServerGameDLL* gamedll, const void* realGlobals);
 	BYTE* FindCVomitUpdateAbility(void* gamedll);
 	PatchManager m_patches;
 };

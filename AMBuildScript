@@ -233,6 +233,9 @@ class ExtensionConfig(object):
       cxx.cflags += ['-Wno-unused-result']
     if cxx.version >= 'gcc-9.0':
       cxx.cxxflags += ['-Wno-class-memaccess', '-Wno-packed-not-aligned']
+    if have_gcc and cxx.version >= 'gcc-14':
+      # Old SourceHook/SDK headers use 'CVector<T>()' style ctors (invalid in C++20).
+      cxx.cxxflags += ['-Wno-template-id-cdtor']
     if have_clang:
       cxx.cxxflags += ['-Wno-implicit-exception-spec-mismatch']
       if cxx.version >= 'apple-clang-5.1' or cxx.version >= 'clang-3.4':
@@ -317,6 +320,9 @@ class ExtensionConfig(object):
   def configure_linux(self, cxx):
     cxx.defines += ['LINUX', '_LINUX', 'POSIX', '_FILE_OFFSET_BITS=64']
     cxx.linkflags += ['-lm']
+    # srcds ships its own ancient libstdc++.so.6 (CXXABI 1.3.5) in bin/, which gets loaded
+    # instead of the system one; link libstdc++ statically so newer compilers still work.
+    cxx.linkflags += ['-static-libstdc++']
     if cxx.family == 'gcc':
       cxx.linkflags += ['-static-libgcc']
     elif cxx.family == 'clang':

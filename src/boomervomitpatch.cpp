@@ -48,9 +48,9 @@ fakeGlobals* gp_FakeGlobals = &g_FakeGlobals;
 	#endif
 #endif
 
-BoomerVomitFrameTimePatch::BoomerVomitFrameTimePatch(IServerGameDLL* gamedll)
+BoomerVomitFrameTimePatch::BoomerVomitFrameTimePatch(IServerGameDLL* gamedll, const void* realGlobals)
 {
-	InitializeBinPatches(gamedll);
+	InitializeBinPatches(gamedll, realGlobals);
 }
 
 BoomerVomitFrameTimePatch::~BoomerVomitFrameTimePatch()
@@ -68,9 +68,10 @@ void BoomerVomitFrameTimePatch::Unpatch()
 	m_patches.UnpatchAll();
 }
 
-void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll)
+void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll, const void* realGlobals)
 {
 	BYTE instr_buf[MAX_MOV_INSTR_LEN];
+	void* pFirstGlobalsAddr = NULL;
 
 	BYTE* pCVomitUpdateAbility = FindCVomitUpdateAbility(static_cast<void*>(gamedll));
 	DevMsg("CVomitUpdateAbility at 0x%08x\n", pCVomitUpdateAbility);
@@ -88,11 +89,32 @@ void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll)
 		BYTE* pTarget = pCVomitUpdateAbility + g_FrameTimeReadOffsets[i];
 
 		int offs = mov_src_operand_offset(pTarget); // Find offset of disp32 in this particular mov instruction
-		if (offs == 0)
+		if (offs == 0 || !mov_is_patchable_disp32(pTarget))
 		{
-			// Throw an exception if we can't identify this offset (unexpected instruction!)
-			// TODO: More useful exception here.
-			throw PatchException("'CVomit::UpdateAbility' patch Offset incorrect.");
+			// Unexpected instruction (or a form whose length would change after rewriting)
+			throw PatchException("'CVomit::UpdateAbility' patch offset incorrect (unexpected instruction).");
+		}
+
+		// For absolute 'mov reg, [addr]' we can verify that 'addr' really is the game's gpGlobals
+		// variable. This catches stale offsets after game updates that would otherwise silently
+		// redirect some unrelated global. (Register-relative PIC forms on Linux can't be checked here.)
+		if (mov_is_absolute_disp32(pTarget))
+		{
+			void* pGlobalsAddr = *(void**)(pTarget + offs);
+
+			if (realGlobals != NULL && *(const void**)pGlobalsAddr != realGlobals)
+			{
+				throw PatchException("'CVomit::UpdateAbility' patch offset incorrect (instruction does not read gpGlobals).");
+			}
+
+			if (pFirstGlobalsAddr == NULL)
+			{
+				pFirstGlobalsAddr = pGlobalsAddr;
+			}
+			else if (pFirstGlobalsAddr != pGlobalsAddr)
+			{
+				throw PatchException("'CVomit::UpdateAbility' patch offset incorrect (frametime reads use different globals).");
+			}
 		}
 
 		memcpy(instr_buf, pTarget, MAX_MOV_INSTR_LEN);

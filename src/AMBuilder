@@ -8,6 +8,7 @@ project.sources += [
   'thirdparty/memutils.cpp',
   'maxrate_patches.cpp',
   'boomervomitpatch.cpp',
+  'nextbotfixes.cpp',
 
   os.path.join(Extension.mms_root, 'core', 'sourcehook', 'sourcehook.cpp'),
   os.path.join(Extension.mms_root, 'core', 'sourcehook', 'sourcehook_impl_chookidman.cpp'),

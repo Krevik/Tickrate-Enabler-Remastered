@@ -194,4 +194,37 @@ const int g_FrameTimeReadOffsets[] =
 	#endif
 #endif
 
+/* NextBot (common infected / witch) fixes for lowered nb_update_frequency, L4D2 only. */
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	#if defined (_LINUX)
+		#define SYM_ZOMBIEBOTLOCOMOTION_RESOLVEZOMBIECOLLISIONS "_ZN19ZombieBotLocomotion23ResolveZombieCollisionsERK6Vector"
+		#define SYM_WITCHATTACK_ONCONTACT "_ZN11WitchAttack9OnContactEP8InfectedP11CBaseEntityP10CGameTrace"
+		#define SYM_WITCHATTACK_ISVALIDENEMY "_ZN11WitchAttack12IsValidEnemyEP11CBaseEntity"
+		#define SYM_WITCHANGRY_ONCONTACT "_ZN10WitchAngry9OnContactEP8InfectedP11CBaseEntityP10CGameTrace"
+		#define SYM_WITCHLOCOMOTION_VTABLE "_ZTV15WitchLocomotion"
+		#define SYM_ZOMBIEBOTLOCOMOTION_CLIMBUPTOLEDGE "_ZN19ZombieBotLocomotion14ClimbUpToLedgeERK6VectorS2_PK11CBaseEntity"
+	#elif defined (_WIN32)
+		// Vprof string "ZombieBotLocomotion::ResolveZombieCollisions" is referenced from this function.
+		// 55 8B EC 83 EC 3C 8B 45 0C 8B 50 04 53 8B 5D 08 56 57 8B F9 8B 08 8B 40 08 89 0B 8B 4F 78
+		DEFINE_SIG(SIG_ZOMBIEBOTLOCOMOTION_RESOLVEZOMBIECOLLISIONS, "\x55\x8B\xEC\x83\xEC\x3C\x8B\x45\x0C\x8B\x50\x04\x53\x8B\x5D\x08\x56\x57\x8B\xF9\x8B\x08\x8B\x40\x08\x89\x0B\x8B\x4F\x78");
+
+		// WitchAttack vtable entry after the two OnLeaveGround/OnLandOnGround(Action*) overloads;
+		// compares contacted entity class against "prop_door*" / "func_door*".
+		// 55 8B EC 51 53 56 57 8B 7D 10 8B F1 89 75 FC 85 FF 0F 84 ? ? ? ? 6A 00 6A 01 6A 00 57 E8
+		DEFINE_SIG(SIG_WITCHATTACK_ONCONTACT, "\x55\x8B\xEC\x51\x53\x56\x57\x8B\x7D\x10\x8B\xF1\x89\x75\xFC\x85\xFF\x0F\x84\x2A\x2A\x2A\x2A\x6A\x00\x6A\x01\x6A\x00\x57\xE8");
+
+		// WitchAngry vtable entry 51 (OnContact); reads z_witch_hostile_at_me_anger * z_witch_anger_rate * frametime.
+		// 55 8B EC 56 8B 75 10 85 F6 74 ? 8B 06 8B 90 28 01 00 00 8B CE FF D2 84 C0 74 ? 8B 06 8B 90 68 01 00 00 8B CE FF D2 84 C0 74 ? 8B 0D
+		DEFINE_SIG(SIG_WITCHANGRY_ONCONTACT, "\x55\x8B\xEC\x56\x8B\x75\x10\x85\xF6\x74\x2A\x8B\x06\x8B\x90\x28\x01\x00\x00\x8B\xCE\xFF\xD2\x84\xC0\x74\x2A\x8B\x06\x8B\x90\x68\x01\x00\x00\x8B\xCE\xFF\xD2\x84\xC0\x74\x2A\x8B\x0D");
+
+		// ZombieBotLocomotion::ClimbUpToLedge (references the 168.0 climb height constant), WitchLocomotion vtable entry 46.
+		// 53 8B DC 83 EC 08 83 E4 F0 83 C4 04 55 8B 6B 04 89 6C 24 04 8B EC 81 EC E8 01 00 00 A1 ? ? ? ? 33 C5 89 45 FC 8B 43 0C 56 8B F1 8B 0D ? ? ? ? 83 79 30 00 57 8B 7B 08
+		DEFINE_SIG(SIG_ZOMBIEBOTLOCOMOTION_CLIMBUPTOLEDGE, "\x53\x8B\xDC\x83\xEC\x08\x83\xE4\xF0\x83\xC4\x04\x55\x8B\x6B\x04\x89\x6C\x24\x04\x8B\xEC\x81\xEC\xE8\x01\x00\x00\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\x8B\x43\x0C\x56\x8B\xF1\x8B\x0D\x2A\x2A\x2A\x2A\x83\x79\x30\x00\x57\x8B\x7B\x08");
+
+		// Prologue of WitchAttack::IsValidEnemy(CBaseEntity*), used to verify the patched call.
+		// 55 8B EC 56 8B 75 08 85 F6 75 05 32 C0
+		DEFINE_SIG(SIG_WITCHATTACK_ISVALIDENEMY, "\x55\x8B\xEC\x56\x8B\x75\x08\x85\xF6\x75\x05\x32\xC0");
+	#endif
+#endif
+
 #endif // _SIGS_H_

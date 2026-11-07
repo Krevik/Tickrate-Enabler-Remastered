@@ -61,6 +61,30 @@ const BYTE NOP_8[] = { 0x0f,0x1f,0x84,0x00,0x00,0x00,0x00,0x00 };
 const BYTE NOP_9[] = { 0x66,0x0f,0x1f,0x84,0x00,0x00,0x00,0x00,0x00 };
 
 
+#define MODRM_MOD(modrm) (((modrm) >> 6) & 0x03)
+#define MODRM_RM(modrm) ((modrm) & 0x07)
+
+// Is this a 'mov r32, [disp32]' (absolute address) instruction?
+// Forms: A1 xx xx xx xx (mov eax, [disp32]) or 8B /r with mod=00, rm=101.
+inline bool mov_is_absolute_disp32(const BYTE* instr)
+{
+	if (instr[0] == 0xA1)
+		return true;
+
+	return instr[0] == 0x8B && MODRM_MOD(instr[1]) == 0 && MODRM_RM(instr[1]) == 5;
+}
+
+// Is this a mov whose source operand is a 32-bit displacement, so it can be safely
+// rewritten in place (same length) to read from an absolute address?
+// Accepts the absolute forms and 8B /r with mod=10 (reg+disp32) without SIB byte.
+inline bool mov_is_patchable_disp32(const BYTE* instr)
+{
+	if (mov_is_absolute_disp32(instr))
+		return true;
+
+	return instr[0] == 0x8B && MODRM_MOD(instr[1]) == 2 && MODRM_RM(instr[1]) != 4;
+}
+
 // Convert mov instruction of any type to mov from immediate address (disp32)
 // @param instr: pointer to first byte of mov instruction
 // @return true if instruction is now disp32 source

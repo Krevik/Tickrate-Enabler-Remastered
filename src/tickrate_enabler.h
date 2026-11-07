@@ -68,7 +68,7 @@ public:
 	virtual const char*		GetPluginDescription(void);
 	virtual void			LevelInit(char const* pMapName) {}
 	virtual void			ServerActivate(edict_t* pEdictList, int edictCount, int clientMax) {}
-	virtual void			GameFrame(bool simulating) {}
+	virtual void			GameFrame(bool simulating);
 	virtual void			LevelShutdown(void) {}
 	virtual void			ClientActive(edict_t* pEntity) {}
 	virtual void			ClientFullyConnect(edict_t* pEntity) {}
@@ -84,7 +84,10 @@ public:
 	virtual void			OnEdictFreed(const edict_t* edict) {}
 
 private:
+	void					LoadNextBotFixes(CGlobalVars* pGlobals);
+
 	PatchManager m_patchManager;
+	PatchManager m_nextBotPatchManager; // optional, failures are not fatal
 };
 
 #endif // __TICKRATE_ENABLER_H__
