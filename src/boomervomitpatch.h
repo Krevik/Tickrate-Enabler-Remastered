@@ -52,4 +52,22 @@ private:
 	PatchManager m_patches;
 };
 
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+/*
+ * CVomit::ActivateAbility starts the vomit effect, sound and duration right away, but schedules the
+ * first hit traces (m_nextSpray) only 0.25 s later, so survivors get covered noticeably after the
+ * boomer visibly starts vomiting. The patch replaces that hard-coded 0.25 s with 'delay'.
+ */
+class BoomerVomitDelayPatch : public ICodePatch
+{
+public:
+	BoomerVomitDelayPatch(IServerGameDLL* gamedll, float delay);
+	~BoomerVomitDelayPatch();
+	void Patch();
+	void Unpatch();
+private:
+	ICodePatch* m_patch;
+};
+#endif
+
 #endif // __BOOMERVOMITPATCH_H__

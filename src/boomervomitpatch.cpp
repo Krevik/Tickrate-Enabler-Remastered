@@ -138,6 +138,59 @@ void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll, co
 	}
 }
 
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+// Read by the patched instruction in CVomit::ActivateAbility instead of the shared 0.25 constant.
+static float g_flVomitDelay = VOMIT_DELAY_VANILLA;
+
+BoomerVomitDelayPatch::BoomerVomitDelayPatch(IServerGameDLL* gamedll, float delay) : m_patch(NULL)
+{
+#if defined (_LINUX)
+	BYTE* pActivateAbility = (BYTE*)g_MemUtils.SimpleResolve(gamedll, SYM_CVOMIT_ACTIVATEABILITY);
+#elif defined (_WIN32)
+	BYTE* pActivateAbility = (BYTE*)g_MemUtils.FindLibPattern(gamedll, SIG_CVOMIT_ACTIVATEABILITY, SIG_CVOMIT_ACTIVATEABILITY_SIZE);
+#endif
+	if (pActivateAbility == NULL)
+	{
+		throw PatchException("Couldn't find 'CVomit::ActivateAbility' in server memory.");
+	}
+
+	BYTE* pInstr = pActivateAbility + VOMIT_DELAY_PATCH_OFFSET;
+	if (memcmp(pInstr, VOMIT_DELAY_PATCH_OPCODE, VOMIT_DELAY_PATCH_OPCODE_SIZE) != 0)
+	{
+		throw PatchException("'CVomit::ActivateAbility' patch offset incorrect (unexpected instruction).");
+	}
+
+	// The instruction is the real code reading its constant, so dereferencing the operand is safe.
+	BYTE* pOperand = pInstr + VOMIT_DELAY_PATCH_OPCODE_SIZE;
+	if (**(float**)pOperand != VOMIT_DELAY_VANILLA)
+	{
+		throw PatchException("'CVomit::ActivateAbility' patch offset incorrect (instruction does not read 0.25).");
+	}
+
+	g_flVomitDelay = delay;
+
+	float* pDelay = &g_flVomitDelay;
+	BYTE replacement[sizeof(pDelay)];
+	memcpy(replacement, &pDelay, sizeof(replacement));
+	m_patch = new BasicStaticBinPatch<sizeof(replacement)>(pOperand, replacement);
+}
+
+BoomerVomitDelayPatch::~BoomerVomitDelayPatch()
+{
+	delete m_patch;
+}
+
+void BoomerVomitDelayPatch::Patch()
+{
+	m_patch->Patch();
+}
+
+void BoomerVomitDelayPatch::Unpatch()
+{
+	m_patch->Unpatch();
+}
+#endif
+
 BYTE* BoomerVomitFrameTimePatch::FindCVomitUpdateAbility(void* gamedll)
 {
 #if defined (_LINUX)

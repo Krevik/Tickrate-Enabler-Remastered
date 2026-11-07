@@ -52,7 +52,7 @@
  // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-#define TE_VERSION "1.7.1"
+#define TE_VERSION "1.7.2"
 
 L4DTickRate g_L4DTickRatePlugin;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR(L4DTickRate, IServerPluginCallbacks, INTERFACEVERSION_ISERVERPLUGINCALLBACKS, g_L4DTickRatePlugin);
@@ -70,11 +70,6 @@ ICvar* g_pCvar = NULL;
 // Used by the NextBot fixes (NULL when they are not active).
 static CGlobalVars* g_pNextBotGlobals = NULL;
 static ConVar* g_pNbUpdateFrequency = NULL;
-
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
-static ConVar te_witch_climb_rate("te_witch_climb_rate", "1.0", FCVAR_NONE,
-	"Animation/movement speed multiplier for the witch climbing ledges (1 = vanilla).", true, 1.0f, true, 10.0f);
-#endif
 
 CvarInfo g_ResetCvars[] = { "sv_maxrate", "sv_minrate", "net_splitpacket_maxrate" };
 size_t g_iResetCvarsCount = sizeof(g_ResetCvars) / sizeof(g_ResetCvars[0]);
@@ -151,13 +146,8 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 	
 	SH_ADD_HOOK(IServerGameDLL, GetTickInterval, g_pGameDll, SH_STATIC(Handler_GetTickInterval), false);
 
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
-	// Register our ConVars (te_witch_climb_rate) with the engine.
-	g_pCVar = g_pCvar;
-	ConVar_Register(0);
-#endif
-
 	LoadNextBotFixes(pGlobals);
+	LoadBoomerVomitDelay();
 	
 	for (size_t i = 0; i < g_iResetCvarsCount; i++) {
 		ConVar* pCvar = g_pCvar->FindVar(g_ResetCvars[i].GetName());
@@ -197,14 +187,10 @@ void L4DTickRate::Unload(void)
 	m_patchManager.UnpatchAll();
 	m_patchManager.UnregisterAll();
 
-	m_nextBotPatchManager.UnpatchAll();
-	m_nextBotPatchManager.UnregisterAll();
+	m_optionalPatchManager.UnpatchAll();
+	m_optionalPatchManager.UnregisterAll();
 	g_pNextBotGlobals = NULL;
 	g_pNbUpdateFrequency = NULL;
-
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
-	ConVar_Unregister();
-#endif
 
 	SH_REMOVE_HOOK(IServerGameDLL, GetTickInterval, g_pGameDll, SH_STATIC(Handler_GetTickInterval), false);
 }
@@ -228,7 +214,7 @@ void L4DTickRate::LoadNextBotFixes(CGlobalVars* pGlobals)
 	if (g_pNbUpdateFrequency != NULL) {
 		try {
 			ICodePatch* pPatch = new ZombieCollisionPushPatch(g_pGameDll);
-			m_nextBotPatchManager.Register(pPatch);
+			m_optionalPatchManager.Register(pPatch);
 			pPatch->Patch();
 			g_pNextBotGlobals = pGlobals;
 		} catch (PatchException& e) {
@@ -237,7 +223,7 @@ void L4DTickRate::LoadNextBotFixes(CGlobalVars* pGlobals)
 
 		try {
 			ICodePatch* pPatch = new WitchContactAngerPatch(g_pGameDll, pGlobals);
-			m_nextBotPatchManager.Register(pPatch);
+			m_optionalPatchManager.Register(pPatch);
 			pPatch->Patch();
 			g_pNextBotGlobals = pGlobals;
 		} catch (PatchException& e) {
@@ -249,18 +235,40 @@ void L4DTickRate::LoadNextBotFixes(CGlobalVars* pGlobals)
 
 	try {
 		ICodePatch* pPatch = new WitchContactVictimPatch(g_pGameDll);
-		m_nextBotPatchManager.Register(pPatch);
+		m_optionalPatchManager.Register(pPatch);
 		pPatch->Patch();
 	} catch (PatchException& e) {
 		Msg("[Tickrate_Enabler] Witch victim switch fix disabled: %s\n", e.GetDescription());
 	}
+#endif
+}
+
+//---------------------------------------------------------------------------------
+// Purpose: delay between the start of the boomer's vomit and the first hits on survivors
+// (vanilla 0.25 s). Set with "-vomitdelay <seconds>", default 0.05.
+// Optional: a failure keeps the vanilla delay.
+//---------------------------------------------------------------------------------
+void L4DTickRate::LoadBoomerVomitDelay()
+{
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	float flDelay = 0.05f;
+	if (CommandLine()->CheckParm("-vomitdelay")) {
+		flDelay = CommandLine()->ParmValue("-vomitdelay", flDelay);
+	}
+
+	if (flDelay < 0.0f) {
+		flDelay = 0.0f;
+	} else if (flDelay > 1.0f) {
+		flDelay = 1.0f;
+	}
 
 	try {
-		ICodePatch* pPatch = new WitchClimbSpeedPatch(g_pGameDll, FindWitchPlaybackRateOffset(g_pGameDll), &te_witch_climb_rate);
-		m_nextBotPatchManager.Register(pPatch);
+		ICodePatch* pPatch = new BoomerVomitDelayPatch(g_pGameDll, flDelay);
+		m_optionalPatchManager.Register(pPatch);
 		pPatch->Patch();
+		Msg("[Tickrate_Enabler] Boomer vomit hit delay: %.3f s (vanilla %.2f s).\n", flDelay, VOMIT_DELAY_VANILLA);
 	} catch (PatchException& e) {
-		Msg("[Tickrate_Enabler] te_witch_climb_rate disabled: %s\n", e.GetDescription());
+		Msg("[Tickrate_Enabler] Boomer vomit delay patch disabled (vanilla %.2f s kept): %s\n", VOMIT_DELAY_VANILLA, e.GetDescription());
 	}
 #endif
 }

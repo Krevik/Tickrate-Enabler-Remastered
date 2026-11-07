@@ -75,31 +75,6 @@ private:
 	ICodePatch* m_patch;
 };
 
-/*
- * Optional gameplay tweak (not a bug fix): the witch climbs ledges with slow, animation driven
- * climb sequences, during which she is an easy target and, with frequent NextBot updates, may get
- * hung up on the ledge. This replaces the ClimbUpToLedge entry of the WitchLocomotion vtable (only
- * witches use it, commons are not affected) with a wrapper that, once a climb has started, raises
- * the witch's m_flPlaybackRate. The climb movement is taken from the animation, so it speeds up
- * together with it. The rate is reset by the game when the next activity starts.
- */
-class WitchClimbSpeedPatch : public ICodePatch
-{
-public:
-	// playbackRateOffset: see FindWitchPlaybackRateOffset.
-	// pClimbRate: playback rate multiplier while climbing (<= 1 disables the tweak).
-	WitchClimbSpeedPatch(void* serverModule, int playbackRateOffset, const ConVar* pClimbRate);
-	~WitchClimbSpeedPatch();
-	void Patch();
-	void Unpatch();
-
-private:
-	ICodePatch* m_patch;
-};
-
-// Offset of m_flPlaybackRate in the witch entity (from the network tables), -1 if not found.
-int FindWitchPlaybackRateOffset(IServerGameDLL* gamedll);
-
 // Recalculate the values used by the patches above from the current nb_update_frequency and
 // tick interval. Call once per frame.
 void UpdateNextBotFixes(const ConVar* pNbUpdateFrequency, float tickInterval);

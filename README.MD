@@ -3,8 +3,8 @@
 A fork of **Tickrate Enabler** (originally by ProdigySim, maintained at
 [accelerator74/Tickrate-Enabler](https://github.com/accelerator74/Tickrate-Enabler)).
 Everything the original does is kept; this fork adds **L4D2 fixes for common infected and the witch
-on servers that lower `nb_update_frequency`** together with the tickrate, plus an optional witch climbing
-speed tweak. See [What's new in this fork](#whats-new-in-this-fork).
+on servers that lower `nb_update_frequency`** together with the tickrate.
+See [What's new in this fork](#whats-new-in-this-fork).
 
 For the original project, its history and issues, please refer to the
 [upstream repository](https://github.com/accelerator74/Tickrate-Enabler).
@@ -21,10 +21,10 @@ L4D2 only (L4D1 builds behave exactly like upstream):
 | Fix | Infected collision push scaled with the NextBot update interval (commons jittering / wedging in corners, witch shoved off her path) | automatic |
 | Fix | Witch no longer switches her victim to infected players she bumps into (and then sits down again after they die) | automatic |
 | Fix | Witch anger from touching survivors no longer depends on tickrate / `nb_update_frequency` | automatic |
-| Tweak | Faster witch ledge climbing | `te_witch_climb_rate 5` (default `1` = vanilla) |
+| Change | Boomer vomit hits survivors 0.05 s after the vomit starts instead of 0.25 s | automatic, `-vomitdelay <seconds>` to change |
 
-All fixes can be disabled with the `-nonextbotfixes` launch parameter. Details are in
-[NextBot fixes](#nextbot-fixes-l4d2-only) below.
+The NextBot fixes can be disabled with the `-nonextbotfixes` launch parameter. Details are in
+[NextBot fixes](#nextbot-fixes-l4d2-only) and [Boomer vomit delay](#boomer-vomit-delay-l4d2-only) below.
 
 ### Description
 
@@ -34,6 +34,9 @@ Patches Boomer Vomit behavior to fix an issue where vomit range scaled inversely
 
 L4D2: fixes common infected / witch problems caused by a lowered `nb_update_frequency`
 (see "NextBot fixes" below).
+
+L4D2: shortens the delay between the start of the boomer's vomit and the first hits on survivors
+(see "Boomer vomit delay" below).
 
 Removes global upper-limits on the max client data rate (was 30000),
 and removes the (30k) limits on rate control cvars:
@@ -46,6 +49,9 @@ and removes the (30k) limits on rate control cvars:
 1. Place tickrate_enabler.dll (Windows) or tickrate_enabler.so (Linux) in your server's addons folder.
 2. Place tickrate_enabler.vdf (L4D2) or tickrate_enabler_l4d1.vdf (L4D1) in your server's addons folder.
 3. Add "-tickrate <desired_tickrate>" to your server's launch parameters. e.g. -tickrate 100
+
+    Optional (L4D2): "-vomitdelay <seconds>" sets the boomer vomit hit delay, e.g. -vomitdelay 0.1
+    (default 0.05, vanilla 0.25, allowed range 0-1).
 4. Make sure the following convar settings are properly set in server.cfg or otherwise:
 
     sv_maxupdaterate 100
@@ -79,16 +85,29 @@ commons / witches update more often. Some NextBot code assumes the default 0.1s 
   (3x slower at 100 tick with the default 0.1, 3x faster at 100 tick with one-tick updates). It now
   always matches vanilla 30 tick / `nb_update_frequency 0.1`.
 
-Optional gameplay tweak (off by default):
-
-- `te_witch_climb_rate <1-10>` (default 1 = vanilla) – speeds up the witch's ledge climbing
-  (animation and movement together), e.g. `te_witch_climb_rate 5`. Only witches are affected.
-  Vanilla climbing is slow and leaves her an easy target.
-
 The fixes are applied automatically; a fix that can't be located after a game update is skipped
 with a console message (the rest of the plugin keeps working). Disable them with `-nonextbotfixes`.
 
+### Boomer vomit delay (L4D2 only)
+
+When a boomer vomits, `CVomit::ActivateAbility` starts the vomit effect, the sound and the vomit duration
+immediately, but schedules the first hit traces only 0.25 s later (hard-coded). Survivors therefore see
+and hear the vomit noticeably before they actually get covered, which on top of the network latency
+feels unresponsive. Once the hits start, the vomit stream is traced instantly (with lag compensation),
+so this fixed delay is the main source of the lag.
+
+The delay is now 0.05 s by default. Set your own value with the launch parameter
+`-vomitdelay <seconds>` (0-1), e.g. `-vomitdelay 0.25` restores vanilla behaviour. Note that the
+vanilla delay is also the window in which survivors can shove the boomer before the vomit lands.
+The chosen value is printed in the server console on load; if the code can't be located after a game
+update, the vanilla delay is kept and a console message explains why.
+
 ### Changelog / TODO
+
+1.7.2 (Remastered fork):
+- Removed the `te_witch_climb_rate` witch climbing tweak (it didn't work reliably).
+- L4D2: boomer vomit hits start 0.05 s after the vomit instead of the hard-coded 0.25 s
+  (`-vomitdelay <seconds>` launch parameter).
 
 1.7.1 (Remastered fork):
 - First public release of the fork (1.7.0 was tagged, but its Linux build failed, so it was never released).
@@ -136,7 +155,7 @@ tickrate_enabler is copyright Michael "ProdigySim" Busby 2012
 
 Upstream maintenance: Accelerator and contributors – https://github.com/accelerator74/Tickrate-Enabler
 
-NextBot fixes and witch tweaks in this fork were researched by reverse engineering the L4D2 dedicated
+NextBot fixes in this fork were researched by reverse engineering the L4D2 dedicated
 server binaries; the witch update throttling idea comes from the "witch_update_nbm" plugin (Lux, Kether).
 
 Parts of this project contain GPLv3 code adapted from SourceMod (Allied Modders L.L.C.) and Left4Downtown2 (Igor Smirnov et. al.).

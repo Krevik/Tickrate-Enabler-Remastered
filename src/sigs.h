@@ -81,6 +81,29 @@ const int g_FrameTimeReadOffsets[] =
 
 #define NUM_FRAMETIME_READS (sizeof(g_FrameTimeReadOffsets)/sizeof(g_FrameTimeReadOffsets[0]))
 
+/* CVomit::ActivateAbility(): m_nextSpray.Start(0.25) - delay between the start of the vomit and the
+   first hit traces in CVomit::UpdateAbility. L4D2 only. The patched instruction reads the shared
+   0.25 constant through an absolute address, which is redirected to our own value. */
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	#if defined (_LINUX)
+		#define SYM_CVOMIT_ACTIVATEABILITY "_ZN6CVomit15ActivateAbilityEv"
+
+		// F3 0F 58 05 <abs32>		addss xmm0, dword ptr [0.25]	(Now() + 0.25)
+		#define VOMIT_DELAY_PATCH_OFFSET 0x112
+		DEFINE_SIG(VOMIT_DELAY_PATCH_OPCODE, "\xF3\x0F\x58\x05");
+	#elif defined (_WIN32)
+		// Calls IsAbilityReadyToFire (vtable +0x328), owner handle at +0x438; references "Vomit.Use".
+		// 55 8B EC 51 57 8B F9 8B 07 8B 90 28 03 00 00 FF D2 84 C0 0F 84 ? ? ? ? 8B 87 38 04 00 00 83 F8 FF 0F 84 ? ? ? ? 8B 15
+		DEFINE_SIG(SIG_CVOMIT_ACTIVATEABILITY, "\x55\x8B\xEC\x51\x57\x8B\xF9\x8B\x07\x8B\x90\x28\x03\x00\x00\xFF\xD2\x84\xC0\x0F\x84\x2A\x2A\x2A\x2A\x8B\x87\x38\x04\x00\x00\x83\xF8\xFF\x0F\x84\x2A\x2A\x2A\x2A\x8B\x15");
+
+		// D8 05 <abs32>			fadd dword ptr [0.25]			(Now() + 0.25)
+		#define VOMIT_DELAY_PATCH_OFFSET 0xBC
+		DEFINE_SIG(VOMIT_DELAY_PATCH_OPCODE, "\xD8\x05");
+	#endif
+
+	#define VOMIT_DELAY_VANILLA 0.25f
+#endif
+
 
 #if defined (_WIN32)
 	#if SOURCE_ENGINE == SE_LEFT4DEAD
@@ -201,8 +224,6 @@ const int g_FrameTimeReadOffsets[] =
 		#define SYM_WITCHATTACK_ONCONTACT "_ZN11WitchAttack9OnContactEP8InfectedP11CBaseEntityP10CGameTrace"
 		#define SYM_WITCHATTACK_ISVALIDENEMY "_ZN11WitchAttack12IsValidEnemyEP11CBaseEntity"
 		#define SYM_WITCHANGRY_ONCONTACT "_ZN10WitchAngry9OnContactEP8InfectedP11CBaseEntityP10CGameTrace"
-		#define SYM_WITCHLOCOMOTION_VTABLE "_ZTV15WitchLocomotion"
-		#define SYM_ZOMBIEBOTLOCOMOTION_CLIMBUPTOLEDGE "_ZN19ZombieBotLocomotion14ClimbUpToLedgeERK6VectorS2_PK11CBaseEntity"
 	#elif defined (_WIN32)
 		// Vprof string "ZombieBotLocomotion::ResolveZombieCollisions" is referenced from this function.
 		// 55 8B EC 83 EC 3C 8B 45 0C 8B 50 04 53 8B 5D 08 56 57 8B F9 8B 08 8B 40 08 89 0B 8B 4F 78
@@ -216,10 +237,6 @@ const int g_FrameTimeReadOffsets[] =
 		// WitchAngry vtable entry 51 (OnContact); reads z_witch_hostile_at_me_anger * z_witch_anger_rate * frametime.
 		// 55 8B EC 56 8B 75 10 85 F6 74 ? 8B 06 8B 90 28 01 00 00 8B CE FF D2 84 C0 74 ? 8B 06 8B 90 68 01 00 00 8B CE FF D2 84 C0 74 ? 8B 0D
 		DEFINE_SIG(SIG_WITCHANGRY_ONCONTACT, "\x55\x8B\xEC\x56\x8B\x75\x10\x85\xF6\x74\x2A\x8B\x06\x8B\x90\x28\x01\x00\x00\x8B\xCE\xFF\xD2\x84\xC0\x74\x2A\x8B\x06\x8B\x90\x68\x01\x00\x00\x8B\xCE\xFF\xD2\x84\xC0\x74\x2A\x8B\x0D");
-
-		// ZombieBotLocomotion::ClimbUpToLedge (references the 168.0 climb height constant), WitchLocomotion vtable entry 46.
-		// 53 8B DC 83 EC 08 83 E4 F0 83 C4 04 55 8B 6B 04 89 6C 24 04 8B EC 81 EC E8 01 00 00 A1 ? ? ? ? 33 C5 89 45 FC 8B 43 0C 56 8B F1 8B 0D ? ? ? ? 83 79 30 00 57 8B 7B 08
-		DEFINE_SIG(SIG_ZOMBIEBOTLOCOMOTION_CLIMBUPTOLEDGE, "\x53\x8B\xDC\x83\xEC\x08\x83\xE4\xF0\x83\xC4\x04\x55\x8B\x6B\x04\x89\x6C\x24\x04\x8B\xEC\x81\xEC\xE8\x01\x00\x00\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\x8B\x43\x0C\x56\x8B\xF1\x8B\x0D\x2A\x2A\x2A\x2A\x83\x79\x30\x00\x57\x8B\x7B\x08");
 
 		// Prologue of WitchAttack::IsValidEnemy(CBaseEntity*), used to verify the patched call.
 		// 55 8B EC 56 8B 75 08 85 F6 75 05 32 C0

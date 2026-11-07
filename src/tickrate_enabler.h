@@ -85,9 +85,10 @@ public:
 
 private:
 	void					LoadNextBotFixes(CGlobalVars* pGlobals);
+	void					LoadBoomerVomitDelay();
 
 	PatchManager m_patchManager;
-	PatchManager m_nextBotPatchManager; // optional, failures are not fatal
+	PatchManager m_optionalPatchManager; // NextBot fixes, vomit delay; failures are not fatal
 };
 
 #endif // __TICKRATE_ENABLER_H__
