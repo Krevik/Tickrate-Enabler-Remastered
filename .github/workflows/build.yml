@@ -64,9 +64,11 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y clang g++-multilib
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
+          # clang >= 19 is required: the upstream l4d2 hl2sdk manifest passes -Wno-nontrivial-memcall,
+          # which the default clang 18 on Ubuntu 24.04 rejects (-Werror,-Wunknown-warning-option).
+          sudo apt-get install -y clang-19 g++-multilib
+          echo "CC=clang-19" >> $GITHUB_ENV
+          echo "CXX=clang++-19" >> $GITHUB_ENV
 
       - name: Checking out SourceMod
         uses: actions/checkout@v7
