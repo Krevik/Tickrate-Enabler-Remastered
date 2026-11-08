@@ -32,7 +32,6 @@ jobs:
           # Pinned on purpose: Linux binaries require the build host's glibc (or older),
           # so building on 24.04 (glibc 2.39) keeps them loadable on Ubuntu 24.04+.
           - ubuntu-24.04
-          - windows-latest
 
         sm_version:
           - "master"
@@ -49,9 +48,6 @@ jobs:
 
           - os: ubuntu-24.04
             os_short: linux
-
-          - os: windows-latest
-            os_short: win
 
     steps:
       - name: Prepare env
