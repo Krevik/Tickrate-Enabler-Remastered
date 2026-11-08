@@ -142,6 +142,14 @@ void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll, co
 // Read by the patched instruction in CVomit::ActivateAbility instead of the shared 0.25 constant.
 static float g_flVomitDelay = VOMIT_DELAY_VANILLA;
 
+static bool IsInModule(const void* address, size_t length, const DynLibInfo& lib)
+{
+	uintptr_t startAddress = reinterpret_cast<uintptr_t>(address);
+	uintptr_t baseAddress = reinterpret_cast<uintptr_t>(lib.baseAddress);
+	return startAddress >= baseAddress && length <= lib.memorySize
+		&& startAddress - baseAddress <= lib.memorySize - length;
+}
+
 BoomerVomitDelayPatch::BoomerVomitDelayPatch(IServerGameDLL* gamedll, float delay) : m_patch(NULL)
 {
 #if defined (_LINUX)
@@ -154,15 +162,32 @@ BoomerVomitDelayPatch::BoomerVomitDelayPatch(IServerGameDLL* gamedll, float dela
 		throw PatchException("Couldn't find 'CVomit::ActivateAbility' in server memory.");
 	}
 
+	DynLibInfo lib = {};
+	if (!g_MemUtils.GetLibraryInfo(gamedll, lib))
+	{
+		throw PatchException("Couldn't get server module information.");
+	}
+	if (!IsInModule(pActivateAbility, VOMIT_DELAY_PATCH_OFFSET + VOMIT_DELAY_PATCH_OPCODE_SIZE + sizeof(float*), lib))
+	{
+		throw PatchException("'CVomit::ActivateAbility' patch offset outside server module.");
+	}
+
 	BYTE* pInstr = pActivateAbility + VOMIT_DELAY_PATCH_OFFSET;
 	if (memcmp(pInstr, VOMIT_DELAY_PATCH_OPCODE, VOMIT_DELAY_PATCH_OPCODE_SIZE) != 0)
 	{
 		throw PatchException("'CVomit::ActivateAbility' patch offset incorrect (unexpected instruction).");
 	}
 
-	// The instruction is the real code reading its constant, so dereferencing the operand is safe.
 	BYTE* pOperand = pInstr + VOMIT_DELAY_PATCH_OPCODE_SIZE;
-	if (**(float**)pOperand != VOMIT_DELAY_VANILLA)
+	const float* pOriginalDelay;
+	memcpy(&pOriginalDelay, pOperand, sizeof(pOriginalDelay));
+	if (!IsInModule(pOriginalDelay, sizeof(float), lib))
+	{
+		throw PatchException("'CVomit::ActivateAbility' delay constant outside server module.");
+	}
+	float originalDelay;
+	memcpy(&originalDelay, pOriginalDelay, sizeof(originalDelay));
+	if (originalDelay != VOMIT_DELAY_VANILLA)
 	{
 		throw PatchException("'CVomit::ActivateAbility' patch offset incorrect (instruction does not read 0.25).");
 	}

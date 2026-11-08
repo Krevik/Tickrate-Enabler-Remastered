@@ -16,6 +16,8 @@
  * You should have received a copy of the GNU General Public License along with
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#include <cmath>
+#include <limits>
 #include <string.h>
 #if defined (_LINUX)
 #include <dlfcn.h>
@@ -181,21 +183,33 @@ void ZombieCollisionPushPatch::Unpatch()
 
 void UpdateNextBotFixes(const ConVar* pNbUpdateFrequency, float tickInterval)
 {
-	if (pNbUpdateFrequency == NULL || tickInterval <= 0.0f)
+	if (pNbUpdateFrequency == NULL || !std::isfinite(tickInterval) || tickInterval <= 0.0f)
+	{
+		return;
+	}
+
+	float nbUpdateFrequency = pNbUpdateFrequency->GetFloat();
+	if (!std::isfinite(nbUpdateFrequency))
 	{
 		return;
 	}
 
 	// Same rounding as NextBotManager: bots are updated every TIME_TO_TICKS(nb_update_frequency)
 	// ticks, or every tick if that is 0.
-	int ticks = (int)(pNbUpdateFrequency->GetFloat() / tickInterval + 0.5f);
-	if (ticks < 1)
+	float roundedTickCount = nbUpdateFrequency / tickInterval + 0.5f;
+	if (!std::isfinite(roundedTickCount)
+		|| (double)roundedTickCount > (double)std::numeric_limits<int>::max())
 	{
-		ticks = 1;
+		return;
 	}
+	int ticks = roundedTickCount < 1.0f ? 1 : (int)roundedTickCount;
 
 	// Fraction of a vanilla update interval that one update covers now.
 	float updateScale = (ticks * tickInterval) / NB_UPDATE_INTERVAL_DEFAULT;
+	if (!std::isfinite(updateScale))
+	{
+		return;
+	}
 
 	g_flZombiePushDist = ZOMBIE_PUSH_DIST_DEFAULT * (updateScale > 1.0f ? 1.0f : updateScale);
 

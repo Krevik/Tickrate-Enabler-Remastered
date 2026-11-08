@@ -129,7 +129,7 @@ void *MemoryUtils::FindPattern(const void *start, const void *end, const char *p
 	while (ptr < (char*)end)
 	{
 		found = true;
-		for (register size_t i = 0; i < len; i++)
+		for (size_t i = 0; i < len; i++)
 		{
 			if (pattern[i] != '\x2A' && pattern[i] != ptr[i])
 			{

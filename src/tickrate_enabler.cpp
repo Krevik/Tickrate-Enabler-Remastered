@@ -29,6 +29,7 @@
  * Version: $Id$
  */
 
+#include <cmath>
 #include "thirdparty/memutils.h"
 #include "thirdparty/sm_convar.h"
 #include "tier0/icommandline.h"
@@ -80,9 +81,9 @@ static float Handler_GetTickInterval()
 	float fTickInterval = fDefTickInterval;
 
 	if (CommandLine()->CheckParm("-tickrate")) {
-		float fTickRate = CommandLine()->ParmValue("-tickrate", 0);
+		float fTickRate = CommandLine()->ParmValue("-tickrate", 0.0f);
 
-		if (fTickRate > 10) {
+		if (std::isfinite(fTickRate) && fTickRate > 10) {
 			fTickInterval = 1.0f / fTickRate;
 
 			static bool s_bReported = false;

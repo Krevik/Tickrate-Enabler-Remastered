@@ -58,8 +58,12 @@ public:
 		}
 	}
 
+	BasicBinPatch(const BasicBinPatch&) = delete;
+	BasicBinPatch& operator=(const BasicBinPatch&) = delete;
+
 	~BasicBinPatch()
 	{
+		Unpatch();
 		delete[] m_pOriginal;
 	}
 
@@ -114,6 +118,14 @@ public:
 		{
 			memcpy(m_original, target, LENGTH);
 		}
+	}
+
+	BasicStaticBinPatch(const BasicStaticBinPatch&) = delete;
+	BasicStaticBinPatch& operator=(const BasicStaticBinPatch&) = delete;
+
+	~BasicStaticBinPatch()
+	{
+		Unpatch();
 	}
 
 	void Patch()
