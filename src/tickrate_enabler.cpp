@@ -151,6 +151,7 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 	LoadBoomerVomitDelay();
 	
 	for (size_t i = 0; i < g_iResetCvarsCount; i++) {
+		g_ResetCvars[i].ClearSavedDefaults();
 		ConVar* pCvar = g_pCvar->FindVar(g_ResetCvars[i].GetName());
 
 		if (pCvar == NULL) {
@@ -158,8 +159,7 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 			continue;
 		}
 
-		g_ResetCvars[i].m_bDefaultHasMax = pCvar->m_bHasMax;
-		g_ResetCvars[i].m_fDefaultMaxValue = pCvar->m_fMaxVal;
+		g_ResetCvars[i].SaveDefaults(pCvar->m_bHasMax, pCvar->m_fMaxVal);
 
 		pCvar->m_bHasMax = false;
 		pCvar->m_fMaxVal = 0.0f;
@@ -178,11 +178,11 @@ void L4DTickRate::Unload(void)
 
 		if (pCvar == NULL) {
 			Msg("[Tickrate_Enabler] Can't find convar '%s'.""\n", g_ResetCvars[i].GetName());
+			g_ResetCvars[i].ClearSavedDefaults();
 			continue;
 		}
 
-		pCvar->m_bHasMax = g_ResetCvars[i].m_bDefaultHasMax;
-		pCvar->m_fMaxVal = g_ResetCvars[i].m_fDefaultMaxValue;
+		g_ResetCvars[i].RestoreDefaults(pCvar->m_bHasMax, pCvar->m_fMaxVal);
 	}
 
 	m_patchManager.UnpatchAll();

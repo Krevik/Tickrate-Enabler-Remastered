@@ -38,6 +38,7 @@ class CvarInfo
 {
 public:
 	CvarInfo(const char* sName)
+		: m_bDefaultsSaved(false), m_fDefaultMaxValue(0.0f), m_bDefaultHasMax(false)
 	{
 		strncpy(m_sCvarName, sName, sizeof(m_sCvarName) - 1);
 		m_sCvarName[sizeof(m_sCvarName) - 1] = '\0';
@@ -48,8 +49,30 @@ public:
 		return m_sCvarName;
 	}
 
+	void ClearSavedDefaults()
+	{
+		m_bDefaultsSaved = false;
+	}
+
+	void SaveDefaults(bool defaultHasMax, float defaultMaxValue)
+	{
+		m_bDefaultHasMax = defaultHasMax;
+		m_fDefaultMaxValue = defaultMaxValue;
+		m_bDefaultsSaved = true;
+	}
+
+	void RestoreDefaults(bool& hasMax, float& maxValue)
+	{
+		if (!m_bDefaultsSaved) return;
+
+		hasMax = m_bDefaultHasMax;
+		maxValue = m_fDefaultMaxValue;
+		m_bDefaultsSaved = false;
+	}
+
 private:
 	char m_sCvarName[128];
+	bool m_bDefaultsSaved;
 
 public:
 	float m_fDefaultMaxValue;

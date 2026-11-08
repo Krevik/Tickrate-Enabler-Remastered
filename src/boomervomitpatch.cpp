@@ -29,9 +29,55 @@
  * Version: $Id$
  */
 #include <cstdlib>
+#include <limits>
+#if defined (_LINUX)
+#include <dlfcn.h>
+#include <sys/uio.h>
+#include <unistd.h>
+#endif
 #include "thirdparty/memutils.h"
 #include "boomervomitpatch.h"
 #include "patchexceptions.h"
+
+static bool IsInModule(const void* address, size_t length, const DynLibInfo& lib)
+{
+	uintptr_t startAddress = reinterpret_cast<uintptr_t>(address);
+	uintptr_t baseAddress = reinterpret_cast<uintptr_t>(lib.baseAddress);
+	return startAddress >= baseAddress && length <= lib.memorySize
+		&& startAddress - baseAddress <= lib.memorySize - length;
+}
+
+// Read through the OS so stale operands fail without dereferencing inaccessible memory.
+// Linux data segments can lie outside the executable range reported by GetLibraryInfo.
+static bool ReadModuleMemory(void* destination, const void* source, size_t length, const DynLibInfo& lib)
+{
+	uintptr_t startAddress = reinterpret_cast<uintptr_t>(source);
+	if (source == NULL || length == 0 || length - 1 > (std::numeric_limits<uintptr_t>::max)() - startAddress)
+	{
+		return false;
+	}
+#if defined (_LINUX)
+	Dl_info startInfo;
+	Dl_info endInfo;
+	const void* endAddress = reinterpret_cast<const void*>(startAddress + length - 1);
+	if (dladdr(source, &startInfo) == 0 || dladdr(endAddress, &endInfo) == 0
+		|| startInfo.dli_fbase != lib.baseAddress || endInfo.dli_fbase != lib.baseAddress)
+	{
+		return false;
+	}
+	iovec local = { destination, length };
+	iovec remote = { const_cast<void*>(source), length };
+	return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)length;
+#elif defined (_WIN32)
+	if (!IsInModule(source, length, lib))
+	{
+		return false;
+	}
+	SIZE_T bytesRead = 0;
+	return ReadProcessMemory(GetCurrentProcess(), source, destination, length, &bytesRead)
+		&& bytesRead == length;
+#endif
+}
 
 struct fakeGlobals
 {
@@ -81,15 +127,29 @@ void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll, co
 		throw PatchException("Couldn't find 'CVomit::UpdateAbility' in server memory.");
 	}
 
+	DynLibInfo lib = {};
+	if (!g_MemUtils.GetLibraryInfo(gamedll, lib))
+	{
+		throw PatchException("Couldn't get server module information.");
+	}
+
 	for (size_t i = 0; i < NUM_FRAMETIME_READS; i++)
 	{
 		DevMsg("Setting up patch for frametime read %d (offs:0x%x).\n", i, g_FrameTimeReadOffsets[i]);
 
-		// Calculate first offset target
+		if (g_FrameTimeReadOffsets[i] < 0
+			|| !IsInModule(pCVomitUpdateAbility, g_FrameTimeReadOffsets[i] + MAX_MOV_INSTR_LEN, lib))
+		{
+			throw PatchException("'CVomit::UpdateAbility' patch offset outside server module.");
+		}
 		BYTE* pTarget = pCVomitUpdateAbility + g_FrameTimeReadOffsets[i];
+		if (!ReadModuleMemory(instr_buf, pTarget, sizeof(instr_buf), lib))
+		{
+			throw PatchException("'CVomit::UpdateAbility' patch instruction is not readable.");
+		}
 
-		int offs = mov_src_operand_offset(pTarget); // Find offset of disp32 in this particular mov instruction
-		if (offs == 0 || !mov_is_patchable_disp32(pTarget))
+		int offs = mov_src_operand_offset(instr_buf); // Find offset of disp32 in this particular mov instruction
+		if (offs == 0 || !mov_is_patchable_disp32(instr_buf))
 		{
 			// Unexpected instruction (or a form whose length would change after rewriting)
 			throw PatchException("'CVomit::UpdateAbility' patch offset incorrect (unexpected instruction).");
@@ -98,11 +158,17 @@ void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll, co
 		// For absolute 'mov reg, [addr]' we can verify that 'addr' really is the game's gpGlobals
 		// variable. This catches stale offsets after game updates that would otherwise silently
 		// redirect some unrelated global. (Register-relative PIC forms on Linux can't be checked here.)
-		if (mov_is_absolute_disp32(pTarget))
+		if (mov_is_absolute_disp32(instr_buf))
 		{
-			void* pGlobalsAddr = *(void**)(pTarget + offs);
+			void* pGlobalsAddr;
+			memcpy(&pGlobalsAddr, instr_buf + offs, sizeof(pGlobalsAddr));
+			const void* pOriginalGlobals;
+			if (!ReadModuleMemory(&pOriginalGlobals, pGlobalsAddr, sizeof(pOriginalGlobals), lib))
+			{
+				throw PatchException("'CVomit::UpdateAbility' gpGlobals operand is not readable server module data.");
+			}
 
-			if (realGlobals != NULL && *(const void**)pGlobalsAddr != realGlobals)
+			if (realGlobals != NULL && pOriginalGlobals != realGlobals)
 			{
 				throw PatchException("'CVomit::UpdateAbility' patch offset incorrect (instruction does not read gpGlobals).");
 			}
@@ -117,21 +183,20 @@ void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll, co
 			}
 		}
 
-		memcpy(instr_buf, pTarget, MAX_MOV_INSTR_LEN);
-
 		// make this instruction read from an immediate address
 		mov_to_disp32(instr_buf);
 
 		// Plug in our super cool immediate address.
 #if defined (_WIN32)
-		*(fakeGlobals***)(instr_buf + offs) = &gp_FakeGlobals;
+		fakeGlobals** pFakeGlobals = &gp_FakeGlobals;
 #elif defined (_LINUX)
 	#if SOURCE_ENGINE == SE_LEFT4DEAD
-			*(fakeGlobals****)(instr_buf + offs) = &gpp_FakeGlobals;
+			fakeGlobals*** pFakeGlobals = &gpp_FakeGlobals;
 	#elif SOURCE_ENGINE == SE_LEFT4DEAD2
-			*(fakeGlobals***)(instr_buf + offs) = &gp_FakeGlobals;
+			fakeGlobals** pFakeGlobals = &gp_FakeGlobals;
 	#endif
 #endif
+		memcpy(instr_buf + offs, &pFakeGlobals, sizeof(pFakeGlobals));
 
 		// Generate BasicBinPatch
 		m_patches.Register(new BasicStaticBinPatch<MAX_MOV_INSTR_LEN>(pTarget, instr_buf));
@@ -141,14 +206,6 @@ void BoomerVomitFrameTimePatch::InitializeBinPatches(IServerGameDLL* gamedll, co
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 // Read by the patched instruction in CVomit::ActivateAbility instead of the shared 0.25 constant.
 static float g_flVomitDelay = VOMIT_DELAY_VANILLA;
-
-static bool IsInModule(const void* address, size_t length, const DynLibInfo& lib)
-{
-	uintptr_t startAddress = reinterpret_cast<uintptr_t>(address);
-	uintptr_t baseAddress = reinterpret_cast<uintptr_t>(lib.baseAddress);
-	return startAddress >= baseAddress && length <= lib.memorySize
-		&& startAddress - baseAddress <= lib.memorySize - length;
-}
 
 BoomerVomitDelayPatch::BoomerVomitDelayPatch(IServerGameDLL* gamedll, float delay) : m_patch(NULL)
 {
@@ -173,20 +230,21 @@ BoomerVomitDelayPatch::BoomerVomitDelayPatch(IServerGameDLL* gamedll, float dela
 	}
 
 	BYTE* pInstr = pActivateAbility + VOMIT_DELAY_PATCH_OFFSET;
-	if (memcmp(pInstr, VOMIT_DELAY_PATCH_OPCODE, VOMIT_DELAY_PATCH_OPCODE_SIZE) != 0)
+	BYTE instruction[VOMIT_DELAY_PATCH_OPCODE_SIZE + sizeof(float*)];
+	if (!ReadModuleMemory(instruction, pInstr, sizeof(instruction), lib)
+		|| memcmp(instruction, VOMIT_DELAY_PATCH_OPCODE, VOMIT_DELAY_PATCH_OPCODE_SIZE) != 0)
 	{
 		throw PatchException("'CVomit::ActivateAbility' patch offset incorrect (unexpected instruction).");
 	}
 
 	BYTE* pOperand = pInstr + VOMIT_DELAY_PATCH_OPCODE_SIZE;
 	const float* pOriginalDelay;
-	memcpy(&pOriginalDelay, pOperand, sizeof(pOriginalDelay));
-	if (!IsInModule(pOriginalDelay, sizeof(float), lib))
-	{
-		throw PatchException("'CVomit::ActivateAbility' delay constant outside server module.");
-	}
+	memcpy(&pOriginalDelay, instruction + VOMIT_DELAY_PATCH_OPCODE_SIZE, sizeof(pOriginalDelay));
 	float originalDelay;
-	memcpy(&originalDelay, pOriginalDelay, sizeof(originalDelay));
+	if (!ReadModuleMemory(&originalDelay, pOriginalDelay, sizeof(originalDelay), lib))
+	{
+		throw PatchException("'CVomit::ActivateAbility' delay constant is not readable server module data.");
+	}
 	if (originalDelay != VOMIT_DELAY_VANILLA)
 	{
 		throw PatchException("'CVomit::ActivateAbility' patch offset incorrect (instruction does not read 0.25).");
