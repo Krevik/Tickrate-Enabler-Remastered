@@ -104,6 +104,17 @@ update, the vanilla delay is kept and a console message explains why.
 
 ### Changelog / TODO
 
+1.7.3 (Remastered fork):
+- Safely reject stale boomer vomit patch offsets and unreadable or foreign-module operands.
+- Fixed convar maximum restoration on unload: only restore defaults captured during the current load.
+- Basic binary patch objects now restore original bytes on destruction and cannot be copied.
+- L4D2: guard NextBot scaling against non-finite values, unsafe integer conversions and overflow.
+- Preserve fractional `-tickrate` values (e.g. `108.5`) and ignore non-finite tickrates.
+- Replaced unaligned pointer writes in boomer patch buffers with `memcpy` and removed the obsolete
+  `register` keyword from the pattern scanner.
+- Added 32-bit Linux regression tests with undefined-behavior checks.
+- CI now builds Linux packages only; Windows was removed from the build matrix.
+
 1.7.2 (Remastered fork):
 - Removed the `te_witch_climb_rate` witch climbing tweak (it didn't work reliably).
 - L4D2: boomer vomit hits start 0.05 s after the vomit instead of the hard-coded 0.25 s
