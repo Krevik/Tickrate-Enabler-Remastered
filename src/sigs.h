@@ -104,6 +104,35 @@ const int g_FrameTimeReadOffsets[] =
 	#define VOMIT_DELAY_VANILLA 0.25f
 #endif
 
+/* CVomit::UpdateAbility(): vomit stream piercing survivors. L4D2 linux only.
+   Every tick the human boomer's vomit stream is traced segment by segment; the first entity a segment
+   hits gets OnVomitCollide() and the stream stops, so a survivor body-blocks the vomit for everyone
+   standing behind them. The patch redirects the two interface pointer loads below to our proxies. */
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+	#define SYM_ONVOMITCOLLIDE "_Z14OnVomitCollideP13CTerrorPlayerP11CBaseEntityS2_i6VectorS3_"
+	#define SYM_CBASEENTITY_GETTEAMNUMBER "_ZNK11CBaseEntity13GetTeamNumberEv"
+	#define SYM_ENGINETRACE "enginetrace"
+	#define SYM_LAGCOMPENSATION "lagcompensation"
+
+	// A1 <&enginetrace>		mov eax, enginetrace			(stream segment trace)
+	#define VOMIT_PIERCE_TRACE_LOAD_OFFSET 0x45B
+	// 8B 10				mov edx, [eax]
+	#define VOMIT_PIERCE_TRACE_VTABLE_OFFSET 0x4DA
+	// FF 52 14				call [edx+14h]					(IEngineTrace::TraceRay)
+	#define VOMIT_PIERCE_TRACE_CALL_OFFSET 0x4F5
+	// E8 <rel32>				call OnVomitCollide				(segment hit something)
+	#define VOMIT_PIERCE_COLLIDE_CALL_OFFSET 0x9C7
+	// A1 <&lagcompensation>	mov eax, lagcompensation		(end of the stream trace)
+	#define VOMIT_PIERCE_FINISH_LOAD_OFFSET 0xA40
+	// 8B 10				mov edx, [eax]
+	#define VOMIT_PIERCE_FINISH_VTABLE_OFFSET 0xA4B
+	// FF 52 04				call [edx+4]					(ILagCompensationManager::FinishLagCompensation)
+	#define VOMIT_PIERCE_FINISH_CALL_OFFSET 0xA54
+
+	// Bytes of CVomit::UpdateAbility read for verification.
+	#define VOMIT_PIERCE_CODE_SIZE (VOMIT_PIERCE_FINISH_CALL_OFFSET + 3)
+#endif
+
 
 #if defined (_WIN32)
 	#if SOURCE_ENGINE == SE_LEFT4DEAD

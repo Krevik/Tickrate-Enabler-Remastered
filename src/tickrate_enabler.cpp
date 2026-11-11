@@ -30,6 +30,9 @@
  */
 
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <ctime>
 #include "thirdparty/memutils.h"
 #include "thirdparty/sm_convar.h"
 #include "tier0/icommandline.h"
@@ -75,10 +78,56 @@ static ConVar* g_pNbUpdateFrequency = NULL;
 CvarInfo g_ResetCvars[] = { "sv_maxrate", "sv_minrate", "net_splitpacket_maxrate" };
 size_t g_iResetCvarsCount = sizeof(g_ResetCvars) / sizeof(g_ResetCvars[0]);
 
+// Log file next to the SourceMod logs (or in addons/ without SourceMod), so the plugin's messages can
+// be read without access to the server console. Empty until the game directory is known.
+static char g_szLogFiles[2][512];
+
+static void InitLogFile()
+{
+	char gameDir[256];
+	g_pEngine->GetGameDir(gameDir, sizeof(gameDir));
+	snprintf(g_szLogFiles[0], sizeof(g_szLogFiles[0]), "%s/addons/sourcemod/logs/tickrate_enabler.log", gameDir);
+	snprintf(g_szLogFiles[1], sizeof(g_szLogFiles[1]), "%s/addons/tickrate_enabler.log", gameDir);
+}
+
+// Prints a "[Tickrate_Enabler] ..." line to the console and appends it to the log file.
+static void TELog(const char* fmt, ...)
+{
+	char message[1024];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(message, sizeof(message), fmt, args);
+	va_end(args);
+
+	Msg("[Tickrate_Enabler] %s\n", message);
+
+	for (size_t i = 0; i < sizeof(g_szLogFiles) / sizeof(g_szLogFiles[0]); i++) {
+		if (g_szLogFiles[i][0] == '\0') {
+			continue;
+		}
+
+		FILE* pFile = fopen(g_szLogFiles[i], "a");
+		if (pFile == NULL) {
+			continue; // e.g. no SourceMod: try addons/
+		}
+
+		char timestamp[64] = "";
+		time_t now = time(NULL);
+		struct tm* pLocal = localtime(&now);
+		if (pLocal != NULL) {
+			strftime(timestamp, sizeof(timestamp), "%m/%d/%Y - %H:%M:%S", pLocal);
+		}
+		fprintf(pFile, "L %s: [Tickrate_Enabler] %s\n", timestamp, message);
+		fclose(pFile);
+		break;
+	}
+}
+
 static float Handler_GetTickInterval()
 {
 	float fDefTickInterval = SH_CALL(g_pGameDll, &IServerGameDLL::GetTickInterval)();
 	float fTickInterval = fDefTickInterval;
+	static bool s_bReported = false;
 
 	if (CommandLine()->CheckParm("-tickrate")) {
 		float fTickRate = CommandLine()->ParmValue("-tickrate", 0.0f);
@@ -86,12 +135,17 @@ static float Handler_GetTickInterval()
 		if (std::isfinite(fTickRate) && fTickRate > 10) {
 			fTickInterval = 1.0f / fTickRate;
 
-			static bool s_bReported = false;
 			if (!s_bReported) {
 				s_bReported = true;
-				Msg("[Tickrate_Enabler] Applied tickrate %.2f (interval %.6f); Default tickrate: %.2f (interval: %.6f).\n", fTickRate, fTickInterval, 1.0f / fDefTickInterval, fDefTickInterval);
+				TELog("Applied tickrate %.2f (interval %.6f); Default tickrate: %.2f (interval: %.6f).", fTickRate, fTickInterval, 1.0f / fDefTickInterval, fDefTickInterval);
 			}
+		} else if (!s_bReported) {
+			s_bReported = true;
+			TELog("Invalid '-tickrate %s' (must be > 10), keeping the default tickrate %.2f.", CommandLine()->ParmValue("-tickrate", ""), 1.0f / fDefTickInterval);
 		}
+	} else if (!s_bReported) {
+		s_bReported = true;
+		TELog("No '-tickrate' launch parameter, keeping the default tickrate %.2f.", 1.0f / fDefTickInterval);
 	}
 
 	RETURN_META_VALUE(MRES_SUPERCEDE, fTickInterval);
@@ -102,21 +156,24 @@ static float Handler_GetTickInterval()
 //---------------------------------------------------------------------------------
 bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gameServerFactory)
 {
-	g_pGameDll = reinterpret_cast<IServerGameDLL*>(gameServerFactory(INTERFACEVERSION_SERVERGAMEDLL, NULL));
-	if (g_pGameDll == NULL) {
-		Error("[Tickrate_Enabler] Failed to get a pointer on 'IServerGameDLL' interface.\n");
-		return false;
-	}
-
+	// Error() would shut the dedicated server down; failures are logged and the plugin isn't loaded.
 	g_pEngine = reinterpret_cast<IVEngineServer*>(interfaceFactory(INTERFACEVERSION_VENGINESERVER, NULL));
 	if (g_pEngine == NULL) {
-		Error("[Tickrate_Enabler] Failed to get a pointer on 'IVEngineServer' interface.\n");
+		TELog("Failed to get a pointer on 'IVEngineServer' interface, plugin not loaded.");
+		return false;
+	}
+	InitLogFile();
+	TELog("Loading %s.", GetPluginDescription());
+
+	g_pGameDll = reinterpret_cast<IServerGameDLL*>(gameServerFactory(INTERFACEVERSION_SERVERGAMEDLL, NULL));
+	if (g_pGameDll == NULL) {
+		TELog("Failed to get a pointer on 'IServerGameDLL' interface, plugin not loaded.");
 		return false;
 	}
 
 	g_pCvar = reinterpret_cast<ICvar*>(interfaceFactory(CVAR_INTERFACE_VERSION, NULL));
 	if (g_pCvar == NULL) {
-		Error("[Tickrate_Enabler] Failed to get a pointer on 'ICvar' interface.\n");
+		TELog("Failed to get a pointer on 'ICvar' interface, plugin not loaded.");
 		return false;
 	}
 
@@ -126,7 +183,7 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 	if (pPlayerInfoManager != NULL) {
 		pGlobals = pPlayerInfoManager->GetGlobalVars();
 	} else {
-		Msg("[Tickrate_Enabler] Failed to get 'IPlayerInfoManager', gpGlobals verification disabled.\n");
+		TELog("Failed to get 'IPlayerInfoManager', gpGlobals verification disabled.");
 	}
 
 	try {
@@ -140,22 +197,26 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 
 		m_patchManager.PatchAll();
 	} catch (PatchException& e) {
-		Error("!!!!!\nPatch Failure: %s\n!!!!!\n", e.GetDescription());
-		Error("Failed to process all tickrate_enabler patches, bailing out.\n");
+		TELog("!!!!! Patch Failure: %s !!!!!", e.GetDescription());
+		TELog("Failed to process all tickrate_enabler patches, bailing out (plugin not loaded, -tickrate has no effect).");
+		m_patchManager.UnpatchAll();
+		m_patchManager.UnregisterAll();
 		return false;
 	}
-	
+	TELog("Boomer vomit range and rate limit patches applied.");
+
 	SH_ADD_HOOK(IServerGameDLL, GetTickInterval, g_pGameDll, SH_STATIC(Handler_GetTickInterval), false);
 
 	LoadNextBotFixes(pGlobals);
 	LoadBoomerVomitDelay();
-	
+	LoadBoomerVomitPierce(pGlobals);
+
 	for (size_t i = 0; i < g_iResetCvarsCount; i++) {
 		g_ResetCvars[i].ClearSavedDefaults();
 		ConVar* pCvar = g_pCvar->FindVar(g_ResetCvars[i].GetName());
 
 		if (pCvar == NULL) {
-			Msg("[Tickrate_Enabler] Can't find convar '%s'.""\n", g_ResetCvars[i].GetName());
+			TELog("Can't find convar '%s'.", g_ResetCvars[i].GetName());
 			continue;
 		}
 
@@ -177,7 +238,7 @@ void L4DTickRate::Unload(void)
 		ConVar* pCvar = g_pCvar->FindVar(g_ResetCvars[i].GetName());
 
 		if (pCvar == NULL) {
-			Msg("[Tickrate_Enabler] Can't find convar '%s'.""\n", g_ResetCvars[i].GetName());
+			TELog("Can't find convar '%s'.", g_ResetCvars[i].GetName());
 			g_ResetCvars[i].ClearSavedDefaults();
 			continue;
 		}
@@ -204,7 +265,7 @@ void L4DTickRate::LoadNextBotFixes(CGlobalVars* pGlobals)
 {
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 	if (CommandLine()->CheckParm("-nonextbotfixes")) {
-		Msg("[Tickrate_Enabler] NextBot fixes disabled by -nonextbotfixes.\n");
+		TELog("NextBot fixes disabled by -nonextbotfixes.");
 		return;
 	}
 
@@ -219,7 +280,7 @@ void L4DTickRate::LoadNextBotFixes(CGlobalVars* pGlobals)
 			pPatch->Patch();
 			g_pNextBotGlobals = pGlobals;
 		} catch (PatchException& e) {
-			Msg("[Tickrate_Enabler] Infected collision push fix disabled: %s\n", e.GetDescription());
+			TELog("Infected collision push fix disabled: %s", e.GetDescription());
 		}
 
 		try {
@@ -228,10 +289,10 @@ void L4DTickRate::LoadNextBotFixes(CGlobalVars* pGlobals)
 			pPatch->Patch();
 			g_pNextBotGlobals = pGlobals;
 		} catch (PatchException& e) {
-			Msg("[Tickrate_Enabler] Witch contact anger fix disabled: %s\n", e.GetDescription());
+			TELog("Witch contact anger fix disabled: %s", e.GetDescription());
 		}
 	} else {
-		Msg("[Tickrate_Enabler] Infected collision push / witch contact anger fixes disabled: 'nb_update_frequency' or gpGlobals not available.\n");
+		TELog("Infected collision push / witch contact anger fixes disabled: 'nb_update_frequency' or gpGlobals not available.");
 	}
 
 	try {
@@ -239,7 +300,7 @@ void L4DTickRate::LoadNextBotFixes(CGlobalVars* pGlobals)
 		m_optionalPatchManager.Register(pPatch);
 		pPatch->Patch();
 	} catch (PatchException& e) {
-		Msg("[Tickrate_Enabler] Witch victim switch fix disabled: %s\n", e.GetDescription());
+		TELog("Witch victim switch fix disabled: %s", e.GetDescription());
 	}
 #endif
 }
@@ -267,10 +328,38 @@ void L4DTickRate::LoadBoomerVomitDelay()
 		ICodePatch* pPatch = new BoomerVomitDelayPatch(g_pGameDll, flDelay);
 		m_optionalPatchManager.Register(pPatch);
 		pPatch->Patch();
-		Msg("[Tickrate_Enabler] Boomer vomit hit delay: %.3f s (vanilla %.2f s).\n", flDelay, VOMIT_DELAY_VANILLA);
+		TELog("Boomer vomit hit delay: %.3f s (vanilla %.2f s).", flDelay, VOMIT_DELAY_VANILLA);
 	} catch (PatchException& e) {
-		Msg("[Tickrate_Enabler] Boomer vomit delay patch disabled (vanilla %.2f s kept): %s\n", VOMIT_DELAY_VANILLA, e.GetDescription());
+		TELog("Boomer vomit delay patch disabled (vanilla %.2f s kept): %s", VOMIT_DELAY_VANILLA, e.GetDescription());
 	}
+#endif
+}
+
+//---------------------------------------------------------------------------------
+// Purpose: the boomer's vomit stream passes through survivors instead of stopping at the first one,
+// so survivors standing behind each other all get covered. Disable with "-novomitpierce".
+// Optional: a failure keeps the vanilla behaviour.
+//---------------------------------------------------------------------------------
+void L4DTickRate::LoadBoomerVomitPierce(CGlobalVars* pGlobals)
+{
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	if (CommandLine()->CheckParm("-novomitpierce")) {
+		TELog("Boomer vomit pierce disabled by -novomitpierce.");
+		return;
+	}
+
+#if defined (_LINUX)
+	try {
+		ICodePatch* pPatch = new BoomerVomitPiercePatch(g_pGameDll, pGlobals);
+		m_optionalPatchManager.Register(pPatch);
+		pPatch->Patch();
+		TELog("Boomer vomit passes through survivors (-novomitpierce for vanilla).");
+	} catch (PatchException& e) {
+		TELog("Boomer vomit pierce patch disabled (vanilla kept): %s", e.GetDescription());
+	}
+#else
+	TELog("Boomer vomit pierce patch is only available on Linux servers.");
+#endif
 #endif
 }
 

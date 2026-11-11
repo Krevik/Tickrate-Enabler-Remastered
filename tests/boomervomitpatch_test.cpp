@@ -124,8 +124,31 @@ static void TestFrameTimePatch()
 	g_ServerLibrary.memorySize = fullModuleSize;
 }
 
+// Fallback used when process_vm_readv is blocked: must copy readable memory and reject unreadable
+// memory without crashing.
+static void TestPipeRead()
+{
+	static BYTE source[10000];
+	static BYTE destination[sizeof(source)];
+	for (size_t i = 0; i < sizeof(source); i++)
+	{
+		source[i] = (BYTE)(i * 7);
+	}
+	assert(ReadMemoryThroughPipe(destination, source, sizeof(source)));
+	assert(memcmp(destination, source, sizeof(source)) == 0);
+	assert(ReadMemoryThroughPipe(destination, source + 3, 1));
+	assert(destination[0] == source[3]);
+
+	const size_t pageSize = (size_t)sysconf(_SC_PAGESIZE);
+	assert(mprotect(g_InaccessibleModuleData, pageSize, PROT_NONE) == 0);
+	assert(!ReadMemoryThroughPipe(destination, g_InaccessibleModuleData, 4));
+	assert(!ReadMemoryThroughPipe(destination, g_InaccessibleModuleData + pageSize - 2, 4));
+	assert(mprotect(g_InaccessibleModuleData, pageSize, PROT_READ | PROT_WRITE) == 0);
+}
+
 int main()
 {
+	TestPipeRead();
 	Dl_info moduleInfo;
 	assert(dladdr(g_ServerMemory, &moduleInfo) != 0);
 	g_ServerLibrary.baseAddress = moduleInfo.dli_fbase;

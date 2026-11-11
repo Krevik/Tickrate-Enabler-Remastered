@@ -32,12 +32,18 @@
 #include <limits>
 #if defined (_LINUX)
 #include <dlfcn.h>
+#include <errno.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #endif
 #include "thirdparty/memutils.h"
 #include "boomervomitpatch.h"
 #include "patchexceptions.h"
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+#include "edict.h"
+#include "engine/IEngineTrace.h"
+#include "gametrace.h"
+#endif
 
 static bool IsInModule(const void* address, size_t length, const DynLibInfo& lib)
 {
@@ -46,6 +52,32 @@ static bool IsInModule(const void* address, size_t length, const DynLibInfo& lib
 	return startAddress >= baseAddress && length <= lib.memorySize
 		&& startAddress - baseAddress <= lib.memorySize - length;
 }
+
+#if defined (_LINUX)
+// The kernel copies from 'source' into a pipe and reports EFAULT for unreadable memory instead of
+// crashing. Chunks of PIPE_BUF bytes always fit, even into a pipe shrunk to a single page.
+static bool ReadMemoryThroughPipe(void* destination, const void* source, size_t length)
+{
+	int fds[2];
+	if (pipe(fds) != 0)
+	{
+		return false;
+	}
+
+	bool ok = true;
+	for (size_t done = 0; ok && done < length;)
+	{
+		size_t chunk = length - done < 4096 ? length - done : 4096;
+		ok = write(fds[1], static_cast<const BYTE*>(source) + done, chunk) == (ssize_t)chunk
+			&& read(fds[0], static_cast<BYTE*>(destination) + done, chunk) == (ssize_t)chunk;
+		done += chunk;
+	}
+
+	close(fds[0]);
+	close(fds[1]);
+	return ok;
+}
+#endif
 
 // Read through the OS so stale operands fail without dereferencing inaccessible memory.
 // Linux data segments can lie outside the executable range reported by GetLibraryInfo.
@@ -67,7 +99,14 @@ static bool ReadModuleMemory(void* destination, const void* source, size_t lengt
 	}
 	iovec local = { destination, length };
 	iovec remote = { const_cast<void*>(source), length };
-	return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)length;
+	ssize_t copied = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+	if (copied == (ssize_t)length)
+	{
+		return true;
+	}
+	// process_vm_readv is often blocked for game servers (seccomp / container profiles: EPERM,
+	// ENOSYS). Only EFAULT and short reads mean the memory itself is not readable.
+	return copied < 0 && errno != EFAULT && ReadMemoryThroughPipe(destination, source, length);
 #elif defined (_WIN32)
 	if (!IsInModule(source, length, lib))
 	{
@@ -271,6 +310,282 @@ void BoomerVomitDelayPatch::Patch()
 void BoomerVomitDelayPatch::Unpatch()
 {
 	m_patch->Unpatch();
+}
+#endif
+
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+// Same stack layout as a Vector passed by value.
+struct VomitVector
+{
+	float x, y, z;
+};
+
+typedef void (*OnVomitCollideFn)(void* attacker, void* victim, void* particle, int team, VomitVector velocity, VomitVector position);
+typedef int (*GetTeamNumberFn)(const void* entity);
+typedef void (*FinishLagCompensationFn)(void* manager, void* player);
+
+// Object layout the game expects behind an interface pointer: just the vtable pointer.
+struct VomitInterfaceProxy
+{
+	void** vtable;
+};
+
+#define VOMIT_PIERCE_MAX_HITS 32
+#define ENGINETRACE_TRACERAY_INDEX 5			// call [edx+14h]
+#define LAGCOMPENSATION_FINISH_INDEX 1		// call [edx+4]
+
+// Survivors the stream passed through during the current CVomit::UpdateAbility call.
+struct VomitPierceHit
+{
+	IHandleEntity* victim;
+	VomitVector velocity;
+	VomitVector position;
+	int tick;
+};
+
+static VomitPierceHit s_PierceHits[VOMIT_PIERCE_MAX_HITS];
+static int s_PierceHitCount = 0;
+
+static IEngineTrace* const* s_ppEngineTrace = NULL;
+static void* const* s_ppLagCompensation = NULL;
+static OnVomitCollideFn s_OnVomitCollide = NULL;
+static GetTeamNumberFn s_GetTeamNumber = NULL;
+static const CGlobalVars* s_pPierceGlobals = NULL;
+
+static void* s_TraceProxyVTable[ENGINETRACE_TRACERAY_INDEX + 1];
+static VomitInterfaceProxy s_TraceProxy = { s_TraceProxyVTable };
+static VomitInterfaceProxy* s_pTraceProxy = &s_TraceProxy; // read by the patched 'mov eax, enginetrace'
+
+static void* s_FinishProxyVTable[LAGCOMPENSATION_FINISH_INDEX + 1];
+static VomitInterfaceProxy s_FinishProxy = { s_FinishProxyVTable };
+static VomitInterfaceProxy* s_pFinishProxy = &s_FinishProxy; // read by the patched 'mov eax, lagcompensation'
+
+static bool IsPiercedVictim(const IHandleEntity* entity)
+{
+	for (int i = 0; i < s_PierceHitCount; i++)
+	{
+		if (s_PierceHits[i].victim == entity)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// Players are the only entities the vomit filter lets through besides the world and props: it already
+// skips the infected team and ghosts, and spectators / dead survivors are not solid.
+static bool IsPlayerEntity(IHandleEntity* entity)
+{
+	if (entity == NULL)
+	{
+		return false;
+	}
+	int index = entity->GetRefEHandle().GetEntryIndex();
+	return index >= 1 && index <= s_pPierceGlobals->maxClients;
+}
+
+// The game's filter, but survivors the stream already passed through are not hit again.
+class VomitPierceFilter : public ITraceFilter
+{
+public:
+	explicit VomitPierceFilter(ITraceFilter* inner) : m_pInner(inner) {}
+
+	bool ShouldHitEntity(IHandleEntity* entity, int contentsMask)
+	{
+		return !IsPiercedVictim(entity) && m_pInner->ShouldHitEntity(entity, contentsMask);
+	}
+
+	TraceType_t GetTraceType() const
+	{
+		return m_pInner->GetTraceType();
+	}
+
+private:
+	ITraceFilter* m_pInner;
+};
+
+// Replaces enginetrace->TraceRay() for one segment of the vomit stream. A survivor hit by the segment
+// is remembered and the segment is traced again without them, so the game only sees what lies behind
+// the survivors (world, prop or nothing) and keeps tracing the stream.
+__attribute__((force_align_arg_pointer))
+static void VomitTraceRay(void* /*proxy*/, const Ray_t* ray, unsigned int mask, ITraceFilter* filter, trace_t* trace)
+{
+	IEngineTrace* engineTrace = *s_ppEngineTrace;
+	const int tick = s_pPierceGlobals->tickcount;
+	if (s_PierceHitCount > 0 && s_PierceHits[0].tick != tick)
+	{
+		s_PierceHitCount = 0; // left over from an UpdateAbility call that never finished
+	}
+
+	VomitPierceFilter pierceFilter(filter);
+	engineTrace->TraceRay(*ray, mask, &pierceFilter, trace);
+	while (trace->fraction < 1.0f && s_PierceHitCount < VOMIT_PIERCE_MAX_HITS)
+	{
+		IHandleEntity* victim = reinterpret_cast<IHandleEntity*>(trace->m_pEnt);
+		if (!IsPlayerEntity(victim))
+		{
+			break;
+		}
+
+		// Same arguments the game passes to OnVomitCollide: stream direction and segment end.
+		VomitPierceHit& hit = s_PierceHits[s_PierceHitCount++];
+		hit.victim = victim;
+		hit.velocity.x = ray->m_Delta.x;
+		hit.velocity.y = ray->m_Delta.y;
+		hit.velocity.z = ray->m_Delta.z;
+		hit.position.x = ray->m_Start.x + ray->m_Delta.x;
+		hit.position.y = ray->m_Start.y + ray->m_Delta.y;
+		hit.position.z = ray->m_Start.z + ray->m_Delta.z;
+		hit.tick = tick;
+
+		engineTrace->TraceRay(*ray, mask, &pierceFilter, trace);
+	}
+}
+
+// Replaces lagcompensation->FinishLagCompensation(owner) at the end of the stream trace: vomits on every
+// survivor the stream passed through (still lag compensated, like the game's own hit), then finishes.
+__attribute__((force_align_arg_pointer))
+static void VomitFinishLagCompensation(void* /*proxy*/, void* player)
+{
+	const int count = s_PierceHitCount;
+	s_PierceHitCount = 0;
+	if (count > 0 && player != NULL)
+	{
+		VomitPierceHit hits[VOMIT_PIERCE_MAX_HITS];
+		memcpy(hits, s_PierceHits, count * sizeof(hits[0]));
+
+		const int tick = s_pPierceGlobals->tickcount;
+		const int team = s_GetTeamNumber(player);
+		for (int i = 0; i < count; i++)
+		{
+			if (hits[i].tick == tick)
+			{
+				s_OnVomitCollide(player, hits[i].victim, NULL, team, hits[i].velocity, hits[i].position);
+			}
+		}
+	}
+
+	void* manager = *s_ppLagCompensation;
+	FinishLagCompensationFn finish = reinterpret_cast<FinishLagCompensationFn>(
+		(*reinterpret_cast<void***>(manager))[LAGCOMPENSATION_FINISH_INDEX]);
+	finish(manager, player);
+}
+
+static void ExpectBytes(const BYTE* code, size_t offset, const char* bytes, size_t length, const char* error)
+{
+	if (memcmp(code + offset, bytes, length) != 0)
+	{
+		throw PatchException(error);
+	}
+}
+
+// 'mov eax, [operand]' (A1 <abs32>) reading the given server global.
+static void ExpectGlobalLoad(const BYTE* code, size_t offset, const void* global, const char* error)
+{
+	const void* operand;
+	memcpy(&operand, code + offset + 1, sizeof(operand));
+	if (code[offset] != 0xA1 || operand != global)
+	{
+		throw PatchException(error);
+	}
+}
+
+static ICodePatch* CreateGlobalLoadPatch(BYTE* instruction, VomitInterfaceProxy** ppProxy)
+{
+	BYTE replacement[1 + sizeof(ppProxy)];
+	replacement[0] = 0xA1;
+	memcpy(replacement + 1, &ppProxy, sizeof(ppProxy));
+	return new BasicStaticBinPatch<sizeof(replacement)>(instruction, replacement);
+}
+
+BoomerVomitPiercePatch::BoomerVomitPiercePatch(IServerGameDLL* gamedll, const CGlobalVars* globals)
+	: m_tracePatch(NULL), m_finishPatch(NULL)
+{
+	if (globals == NULL)
+	{
+		throw PatchException("gpGlobals not available.");
+	}
+
+	BYTE* pUpdateAbility = (BYTE*)g_MemUtils.SimpleResolve(gamedll, SYM_CVOMIT_UPDATEABILITY);
+	void* pOnVomitCollide = g_MemUtils.SimpleResolve(gamedll, SYM_ONVOMITCOLLIDE);
+	void* pGetTeamNumber = g_MemUtils.SimpleResolve(gamedll, SYM_CBASEENTITY_GETTEAMNUMBER);
+	void* ppEngineTrace = g_MemUtils.SimpleResolve(gamedll, SYM_ENGINETRACE);
+	void* ppLagCompensation = g_MemUtils.SimpleResolve(gamedll, SYM_LAGCOMPENSATION);
+	if (pUpdateAbility == NULL || pOnVomitCollide == NULL || pGetTeamNumber == NULL
+		|| ppEngineTrace == NULL || ppLagCompensation == NULL)
+	{
+		throw PatchException("Couldn't find 'CVomit::UpdateAbility', 'OnVomitCollide', 'CBaseEntity::GetTeamNumber', 'enginetrace' or 'lagcompensation'.");
+	}
+
+	DynLibInfo lib = {};
+	if (!g_MemUtils.GetLibraryInfo(gamedll, lib))
+	{
+		throw PatchException("Couldn't get server module information.");
+	}
+	if (!IsInModule(pUpdateAbility, VOMIT_PIERCE_CODE_SIZE, lib))
+	{
+		throw PatchException("'CVomit::UpdateAbility' pierce patch offsets outside server module.");
+	}
+
+	BYTE code[VOMIT_PIERCE_CODE_SIZE];
+	if (!ReadModuleMemory(code, pUpdateAbility, sizeof(code), lib))
+	{
+		throw PatchException("'CVomit::UpdateAbility' is not readable.");
+	}
+
+	ExpectGlobalLoad(code, VOMIT_PIERCE_TRACE_LOAD_OFFSET, ppEngineTrace,
+		"'CVomit::UpdateAbility' pierce patch offset incorrect (expected enginetrace load).");
+	ExpectBytes(code, VOMIT_PIERCE_TRACE_VTABLE_OFFSET, "\x8B\x10", 2,
+		"'CVomit::UpdateAbility' pierce patch offset incorrect (expected enginetrace vtable load).");
+	ExpectBytes(code, VOMIT_PIERCE_TRACE_CALL_OFFSET, "\xFF\x52\x14", 3,
+		"'CVomit::UpdateAbility' pierce patch offset incorrect (expected IEngineTrace::TraceRay call).");
+
+	int32_t collideDisplacement;
+	memcpy(&collideDisplacement, code + VOMIT_PIERCE_COLLIDE_CALL_OFFSET + 1, sizeof(collideDisplacement));
+	uintptr_t collideTarget = reinterpret_cast<uintptr_t>(pUpdateAbility) + VOMIT_PIERCE_COLLIDE_CALL_OFFSET + 5
+		+ static_cast<uintptr_t>(static_cast<intptr_t>(collideDisplacement));
+	if (code[VOMIT_PIERCE_COLLIDE_CALL_OFFSET] != 0xE8 || collideTarget != reinterpret_cast<uintptr_t>(pOnVomitCollide))
+	{
+		throw PatchException("'CVomit::UpdateAbility' pierce patch offset incorrect (expected OnVomitCollide call).");
+	}
+
+	ExpectGlobalLoad(code, VOMIT_PIERCE_FINISH_LOAD_OFFSET, ppLagCompensation,
+		"'CVomit::UpdateAbility' pierce patch offset incorrect (expected lagcompensation load).");
+	ExpectBytes(code, VOMIT_PIERCE_FINISH_VTABLE_OFFSET, "\x8B\x10", 2,
+		"'CVomit::UpdateAbility' pierce patch offset incorrect (expected lagcompensation vtable load).");
+	ExpectBytes(code, VOMIT_PIERCE_FINISH_CALL_OFFSET, "\xFF\x52\x04", 3,
+		"'CVomit::UpdateAbility' pierce patch offset incorrect (expected FinishLagCompensation call).");
+
+	s_ppEngineTrace = static_cast<IEngineTrace* const*>(ppEngineTrace);
+	s_ppLagCompensation = static_cast<void* const*>(ppLagCompensation);
+	s_OnVomitCollide = reinterpret_cast<OnVomitCollideFn>(pOnVomitCollide);
+	s_GetTeamNumber = reinterpret_cast<GetTeamNumberFn>(pGetTeamNumber);
+	s_pPierceGlobals = globals;
+	s_PierceHitCount = 0;
+	s_TraceProxyVTable[ENGINETRACE_TRACERAY_INDEX] = reinterpret_cast<void*>(&VomitTraceRay);
+	s_FinishProxyVTable[LAGCOMPENSATION_FINISH_INDEX] = reinterpret_cast<void*>(&VomitFinishLagCompensation);
+
+	m_tracePatch = CreateGlobalLoadPatch(pUpdateAbility + VOMIT_PIERCE_TRACE_LOAD_OFFSET, &s_pTraceProxy);
+	m_finishPatch = CreateGlobalLoadPatch(pUpdateAbility + VOMIT_PIERCE_FINISH_LOAD_OFFSET, &s_pFinishProxy);
+}
+
+BoomerVomitPiercePatch::~BoomerVomitPiercePatch()
+{
+	delete m_tracePatch;
+	delete m_finishPatch;
+}
+
+void BoomerVomitPiercePatch::Patch()
+{
+	// Finish first: survivors collected by the trace proxy must always get their hit applied.
+	m_finishPatch->Patch();
+	m_tracePatch->Patch();
+}
+
+void BoomerVomitPiercePatch::Unpatch()
+{
+	m_tracePatch->Unpatch();
+	m_finishPatch->Unpatch();
 }
 #endif
 

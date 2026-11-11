@@ -22,9 +22,11 @@ L4D2 only (L4D1 builds behave exactly like upstream):
 | Fix | Witch no longer switches her victim to infected players she bumps into (and then sits down again after they die) | automatic |
 | Fix | Witch anger from touching survivors no longer depends on tickrate / `nb_update_frequency` | automatic |
 | Change | Boomer vomit hits survivors 0.05 s after the vomit starts instead of 0.25 s | automatic, `-vomitdelay <seconds>` to change |
+| Change | Boomer vomit passes through survivors, so the survivors behind the first one get covered too (Linux) | automatic, `-novomitpierce` for vanilla |
 
 The NextBot fixes can be disabled with the `-nonextbotfixes` launch parameter. Details are in
-[NextBot fixes](#nextbot-fixes-l4d2-only) and [Boomer vomit delay](#boomer-vomit-delay-l4d2-only) below.
+[NextBot fixes](#nextbot-fixes-l4d2-only), [Boomer vomit delay](#boomer-vomit-delay-l4d2-only) and
+[Boomer vomit pierce](#boomer-vomit-pierce-l4d2-linux-only) below.
 
 ### Description
 
@@ -37,6 +39,9 @@ L4D2: fixes common infected / witch problems caused by a lowered `nb_update_freq
 
 L4D2: shortens the delay between the start of the boomer's vomit and the first hits on survivors
 (see "Boomer vomit delay" below).
+
+L4D2 (Linux): the boomer's vomit stream passes through survivors instead of stopping at the first one
+(see "Boomer vomit pierce" below).
 
 Removes global upper-limits on the max client data rate (was 30000),
 and removes the (30k) limits on rate control cvars:
@@ -52,6 +57,8 @@ and removes the (30k) limits on rate control cvars:
 
     Optional (L4D2): "-vomitdelay <seconds>" sets the boomer vomit hit delay, e.g. -vomitdelay 0.1
     (default 0.05, vanilla 0.25, allowed range 0-1).
+
+    Optional (L4D2, Linux): "-novomitpierce" restores the vanilla vomit stream that stops at the first survivor.
 4. Make sure the following convar settings are properly set in server.cfg or otherwise:
 
     sv_maxupdaterate 100
@@ -63,6 +70,12 @@ and removes the (30k) limits on rate control cvars:
 	Note that fps_max and sv_maxrate are hidden variables on most scenarios.
 
 5. Done. Enjoy 100 tick L4D/L4D2 gameplay.
+
+The `.vdf` loads `addons/tickrate_enabler/tickrate_enabler.so` (`.dll` on Windows), so keep the binary in
+that folder. Everything the plugin reports (version, applied tickrate, each patch, failures) is printed to
+the server console and appended to `addons/sourcemod/logs/tickrate_enabler.log` (or
+`addons/tickrate_enabler.log` on servers without SourceMod). If that file stays empty, the plugin wasn't
+loaded at all: check `plugin_print` (from the game as a SourceMod admin: `sm_rcon plugin_print`).
 
 ### NextBot fixes (L4D2 only)
 
@@ -102,7 +115,34 @@ vanilla delay is also the window in which survivors can shove the boomer before 
 The chosen value is printed in the server console on load; if the code can't be located after a game
 update, the vanilla delay is kept and a console message explains why.
 
+### Boomer vomit pierce (L4D2, Linux only)
+
+While a (human) boomer vomits, `CVomit::UpdateAbility` traces the vomit stream every tick from the boomer's
+mouth along a short arc, segment by segment, and stops at the first thing a segment hits. Survivors are
+"things" too, so the survivor in front absorbs the whole stream: a survivor standing right behind them only
+gets covered when the small random spread of the stream happens to miss the one in front. This is vanilla
+behaviour (the vomit delay change above doesn't affect it), but it makes survivors body-block bile for each
+other.
+
+With this patch the stream passes through survivors: every survivor along the stream is vomited on
+exactly like the one the stream would have stopped at (same `OnVomitCollide` call, still lag compensated,
+at most once per survivor per tick), and only the world and props stop it. Infected and ghosts were
+already ignored by the stream. Bot boomers spray physical vomit particles instead of tracing a stream and
+are not affected.
+
+Enabled by default; `-novomitpierce` restores the vanilla behaviour. Linux servers only. If the code
+can't be located after a game update, the vanilla behaviour is kept and a console message explains why.
+
 ### Changelog / TODO
+
+Unreleased (Remastered fork):
+- L4D2 (Linux): boomer vomit passes through survivors instead of stopping at the first one
+  (`-novomitpierce` launch parameter for vanilla).
+- Messages are also written to `addons/sourcemod/logs/tickrate_enabler.log` (or `addons/tickrate_enabler.log`),
+  including the applied tickrate, or why the default one was kept.
+- Patch failures no longer use the engine's fatal `Error()`; they are logged and the plugin is not loaded.
+- Linux: reading game memory for patch verification falls back to a pipe when `process_vm_readv` is blocked
+  (seccomp / container profiles), instead of failing all patches.
 
 1.7.3 (Remastered fork):
 - Safely reject stale boomer vomit patch offsets and unreadable or foreign-module operands.

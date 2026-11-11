@@ -19,6 +19,21 @@ def ResolveEnvPath(env, folder):
 
   return None
 
+# True if the compiler driver can link a shared object with this extra flag.
+def LinkerAccepts(cxx, flag):
+  import subprocess, tempfile
+  argv = getattr(cxx, 'cxx_argv', None)
+  if not argv:
+    return False
+  with tempfile.TemporaryDirectory() as tmp:
+    command = list(argv) + ['-shared', '-x', 'c++', '-', '-o', os.path.join(tmp, 'probe.so'), flag]
+    try:
+      result = subprocess.run(command, input = b'int probe;\n',
+                              stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    except OSError:
+      return False
+    return result.returncode == 0
+
 def Normalize(path):
   return os.path.abspath(os.path.normpath(path))
 
@@ -330,6 +345,11 @@ class ExtensionConfig(object):
       cxx.linkflags += ['-static-libgcc']
     elif cxx.family == 'clang':
       cxx.linkflags += ['-lgcc_eh']
+    # binutils >= 2.45 linking against glibc >= 2.42 adds a GLIBC_ABI_GNU_TLS version dependency to
+    # i386 objects using TLS (the static libstdc++ does), and servers with an older glibc then refuse
+    # to load the plugin at all. Builds made with older binutils never had it.
+    if LinkerAccepts(cxx, '-Wl,--no-gnu-tls-tag'):
+      cxx.linkflags += ['-Wl,--no-gnu-tls-tag']
 
   def configure_mac(self, cxx):
     cxx.defines += ['OSX', '_OSX', 'POSIX', 'KE_ABSOLUTELY_NO_STL']

@@ -70,4 +70,28 @@ private:
 };
 #endif
 
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+class CGlobalVars;
+
+/*
+ * CVomit::UpdateAbility traces the human boomer's vomit stream every tick and stops at the first entity
+ * it hits, so the survivor in front absorbs the whole stream and the survivors behind them stay clean.
+ * With this patch the stream passes through survivors: every survivor along it is vomited on (exactly
+ * like the one the stream would have stopped at), and only the world / props stop it.
+ * Bot boomers spray physical CVomitParticle entities instead and are not affected.
+ */
+class BoomerVomitPiercePatch : public ICodePatch
+{
+public:
+	// globals: the game's gpGlobals (tick count and max clients).
+	BoomerVomitPiercePatch(IServerGameDLL* gamedll, const CGlobalVars* globals);
+	~BoomerVomitPiercePatch();
+	void Patch();
+	void Unpatch();
+private:
+	ICodePatch* m_tracePatch;
+	ICodePatch* m_finishPatch;
+};
+#endif
+
 #endif // __BOOMERVOMITPATCH_H__

@@ -38,7 +38,7 @@ compiler_flags = [
 ]
 compiler_flags += ['-I{}'.format(path) for path in include_paths]
 library_path = sdk / 'lib/linux'
-test_names = ['basicbinpatch', 'nextbotfixes', 'boomervomitpatch', 'cvarinfo']
+test_names = ['basicbinpatch', 'nextbotfixes', 'boomervomitpatch', 'boomervomitpierce', 'cvarinfo']
 
 with tempfile.TemporaryDirectory(prefix='tickrate-tests-') as build_directory:
     for test_name in test_names:
@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='tickrate-tests-') as build_directory:
             str(repository / 'tests/{}_test.cpp'.format(test_name)),
             '-Wl,--gc-sections', '-o', str(executable),
         ]
-        if test_name in ['nextbotfixes', 'boomervomitpatch']:
+        if test_name in ['nextbotfixes', 'boomervomitpatch', 'boomervomitpierce']:
             command += [
                 str(library_path / 'tier1_i486.a'),
                 '-L{}'.format(library_path), '-Wl,-rpath,{}'.format(library_path),
