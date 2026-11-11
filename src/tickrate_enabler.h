@@ -110,6 +110,9 @@ private:
 	void					LoadNextBotFixes(CGlobalVars* pGlobals);
 	void					LoadBoomerVomitDelay();
 	void					LoadBoomerVomitPierce(CGlobalVars* pGlobals);
+	void					LoadLagCompWindowFix();
+	void					LoadUpdateRateFix();
+	void					LoadReliableSound(CreateInterfaceFn interfaceFactory);
 
 	PatchManager m_patchManager;
 	PatchManager m_optionalPatchManager; // NextBot fixes, vomit delay / pierce; failures are not fatal

@@ -38,7 +38,7 @@ compiler_flags = [
 ]
 compiler_flags += ['-I{}'.format(path) for path in include_paths]
 library_path = sdk / 'lib/linux'
-test_names = ['basicbinpatch', 'nextbotfixes', 'boomervomitpatch', 'boomervomitpierce', 'cvarinfo']
+test_names = ['basicbinpatch', 'nextbotfixes', 'boomervomitpatch', 'boomervomitpierce', 'lagcompfix', 'reliablesound', 'updateratefix', 'cvarinfo']
 
 with tempfile.TemporaryDirectory(prefix='tickrate-tests-') as build_directory:
     for test_name in test_names:
@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='tickrate-tests-') as build_directory:
             str(repository / 'tests/{}_test.cpp'.format(test_name)),
             '-Wl,--gc-sections', '-o', str(executable),
         ]
-        if test_name in ['nextbotfixes', 'boomervomitpatch', 'boomervomitpierce']:
+        if test_name in ['nextbotfixes', 'boomervomitpatch', 'boomervomitpierce', 'lagcompfix', 'reliablesound', 'updateratefix']:
             command += [
                 str(library_path / 'tier1_i486.a'),
                 '-L{}'.format(library_path), '-Wl,-rpath,{}'.format(library_path),
@@ -58,3 +58,17 @@ with tempfile.TemporaryDirectory(prefix='tickrate-tests-') as build_directory:
         environment['LD_LIBRARY_PATH'] = str(library_path) + os.pathsep + environment.get('LD_LIBRARY_PATH', '')
         subprocess.run([str(executable)], check=True, env=environment)
         print('{}: passed'.format(test_name), flush=True)
+
+    # Patch sites against the real game binaries, when the dedicated server files are available
+    # (tools/l4d2ds_linux, downloaded with DepotDownloader; not in the repository).
+    server_binary = repository / 'tools/l4d2ds_linux/left4dead2/bin/server_srv.so'
+    engine_binary = repository / 'tools/l4d2ds_linux/bin/engine_srv.so'
+    if server_binary.is_file() and engine_binary.is_file():
+        executable = Path(build_directory) / 'realbinary_check'
+        subprocess.run([options.cxx] + compiler_flags + [
+            str(repository / 'tests/realbinary_check.cpp'), '-o', str(executable),
+        ], check=True)
+        subprocess.run([str(executable), str(server_binary), str(engine_binary)], check=True)
+        print('realbinary_check: passed', flush=True)
+    else:
+        print('realbinary_check: skipped (no game binaries in tools/l4d2ds_linux)', flush=True)

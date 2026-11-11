@@ -133,6 +133,60 @@ const int g_FrameTimeReadOffsets[] =
 	#define VOMIT_PIERCE_CODE_SIZE (VOMIT_PIERCE_FINISH_CALL_OFFSET + 3)
 #endif
 
+/* CTerrorPlayer::WantsLagCompensationOnEntity(): other entities are only rewound for a usercmd that
+   holds IN_ATTACK / IN_ATTACK2, or at most 5 usercmds after the last weapon fire / melee swing start
+   (m_iLastWeaponFireUsercmd). Usercmds are ticks, so the window is 166 ms at 30 tick but 50 ms at
+   100 tick, while a shove keeps tracing for z_gun_swing_duration (0.2 s). L4D2 linux only. */
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+	#define SYM_CTERRORPLAYER_WANTSLAGCOMPENSATIONONENTITY "_ZNK13CTerrorPlayer28WantsLagCompensationOnEntityEPK11CBaseEntityPK8CUserCmdPK7CBitVecILi2048EE"
+
+	// 8B 4E 04				mov ecx, [esi+4]				(cmd->command_number)
+	// 89 45 E4				mov [ebp-1Ch], eax
+	// 8B 46 24				mov eax, [esi+24h]				(cmd->buttons)
+	// 8B 97 8C 29 00 00		mov edx, [edi+298Ch]			(m_iLastWeaponFireUsercmd)
+	// A8 01 75 09 F6 C4 08	test al, 1; jnz; test ah, 8	(IN_ATTACK / IN_ATTACK2)
+	#define LAGCOMP_WINDOW_ANCHOR_OFFSET 0x15
+	DEFINE_SIG(LAGCOMP_WINDOW_ANCHOR_BYTES, "\x8B\x4E\x04\x89\x45\xE4\x8B\x46\x24\x8B\x97\x8C\x29\x00\x00\xA8\x01\x75\x09\xF6\xC4\x08");
+
+	// 29 D1				sub ecx, edx
+	// 83 F9 05				cmp ecx, 5
+	// 0F 8E <rel32>		jle <still lag compensate>
+	#define LAGCOMP_WINDOW_PATCH_OFFSET 0xC0
+	DEFINE_SIG(LAGCOMP_WINDOW_PATCH_BYTES, "\x29\xD1\x83\xF9\x05\x0F\x8E");
+	#define LAGCOMP_WINDOW_IMMEDIATE_OFFSET (LAGCOMP_WINDOW_PATCH_OFFSET + 4)
+	#define LAGCOMP_WINDOW_VANILLA_USERCMDS 5
+#endif
+
+/* engine: CGameClient::SetUpdateRate / CBaseClient::SetUpdateRate clamp every client's snapshot rate to
+   100 per second. L4D2 linux only (engine_srv.so). */
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+	#define SYM_CBASECLIENT_SETUPDATERATE "_ZN11CBaseClient13SetUpdateRateEib"
+	#define SYM_CGAMECLIENT_SETUPDATERATE "_ZN11CGameClient13SetUpdateRateEib"
+
+	// BA 64 00 00 00			mov edx, 100
+	// 83 F8 64				cmp eax, 100
+	// 0F 4E D0				cmovle edx, eax				(rate = min(rate, 100))
+	// 8B 45 08				mov eax, [ebp+8]
+	// F3 0F 2A CA			cvtsi2ss xmm1, edx
+	// F3 0F 5E C1			divss xmm0, xmm1				(1.0 / rate)
+	// F3 0F 11 80 20 02 00 00	movss [eax+220h], xmm0		(m_fSnapshotInterval)
+	#define UPDATERATE_BASECLIENT_CLAMP_OFFSET 0x18
+	DEFINE_SIG(UPDATERATE_BASECLIENT_CLAMP_BYTES, "\xBA\x64\x00\x00\x00\x83\xF8\x64\x0F\x4E\xD0\x8B\x45\x08\xF3\x0F\x2A\xCA\xF3\x0F\x5E\xC1\xF3\x0F\x11\x80\x20\x02\x00\x00");
+	#define UPDATERATE_BASECLIENT_PATCH_SIZE 11
+	#define UPDATERATE_BASECLIENT_CODE_SIZE (UPDATERATE_BASECLIENT_CLAMP_OFFSET + UPDATERATE_BASECLIENT_CLAMP_BYTES_SIZE)
+
+	// 83 FA 64				cmp edx, 100					(rate after sv_min/maxupdaterate)
+	// B8 64 00 00 00			mov eax, 100
+	// 7F 07				jg +7						(-> rate = 100)
+	// 39 F2 89 F0 0F 4D C2		cmp edx, esi; mov eax, esi; cmovge eax, edx
+	#define UPDATERATE_GAMECLIENT_CLAMP_OFFSET 0x39
+	DEFINE_SIG(UPDATERATE_GAMECLIENT_CLAMP_BYTES, "\x83\xFA\x64\xB8\x64\x00\x00\x00\x7F\x07\x39\xF2\x89\xF0\x0F\x4D\xC2");
+	#define UPDATERATE_GAMECLIENT_PATCH_SIZE 10
+	// E9 <rel32>				jmp CBaseClient::SetUpdateRate
+	#define UPDATERATE_GAMECLIENT_JMP_OFFSET 0x59
+	#define UPDATERATE_GAMECLIENT_CODE_SIZE (UPDATERATE_GAMECLIENT_JMP_OFFSET + 5)
+#endif
+
 
 #if defined (_WIN32)
 	#if SOURCE_ENGINE == SE_LEFT4DEAD

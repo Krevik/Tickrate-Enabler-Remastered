@@ -16,3 +16,6 @@ tools/
 agent*.py
 __pycache__/
 *.pyc
+
+## Local test build copied to the repository root
+/tickrate_enabler.so

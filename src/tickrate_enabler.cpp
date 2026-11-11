@@ -52,11 +52,15 @@
 #include "boomervomitpatch.h"
 #include "maxrate_patches.h"
 #include "nextbotfixes.h"
+#include "lagcompfix.h"
+#include "reliablesound.h"
+#include "updateratefix.h"
+#include "engine/IEngineSound.h"
 
  // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-#define TE_VERSION "1.7.3"
+#define TE_VERSION "1.8.0"
 
 L4DTickRate g_L4DTickRatePlugin;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR(L4DTickRate, IServerPluginCallbacks, INTERFACEVERSION_ISERVERPLUGINCALLBACKS, g_L4DTickRatePlugin);
@@ -74,6 +78,19 @@ ICvar* g_pCvar = NULL;
 // Used by the NextBot fixes (NULL when they are not active).
 static CGlobalVars* g_pNextBotGlobals = NULL;
 static ConVar* g_pNbUpdateFrequency = NULL;
+
+// gpGlobals (NULL if IPlayerInfoManager wasn't available).
+static CGlobalVars* g_pGlobals = NULL;
+
+// Lag compensation window fix (NULL when not active); owned by m_optionalPatchManager.
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+static LagCompWindowPatch* g_pLagCompWindowPatch = NULL;
+#endif
+
+// te_reliable_sound
+static IEngineSound* g_pEngineSound = NULL;
+static IPlayerInfoManager* g_pPlayerInfoManager = NULL;
+static bool g_bConVarsRegistered = false;
 
 CvarInfo g_ResetCvars[] = { "sv_maxrate", "sv_minrate", "net_splitpacket_maxrate" };
 size_t g_iResetCvarsCount = sizeof(g_ResetCvars) / sizeof(g_ResetCvars[0]);
@@ -151,6 +168,57 @@ static float Handler_GetTickInterval()
 	RETURN_META_VALUE(MRES_SUPERCEDE, fTickInterval);
 }
 
+// Tick interval the server will run at, known before the engine applies it (same rules as above).
+static float GetConfiguredTickInterval()
+{
+	if (CommandLine()->CheckParm("-tickrate")) {
+		float fTickRate = CommandLine()->ParmValue("-tickrate", 0.0f);
+		if (std::isfinite(fTickRate) && fTickRate > 10) {
+			return 1.0f / fTickRate;
+		}
+	}
+	return 1.0f / 30.0f;
+}
+
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+// Clients a sound is sent to: connected humans (they have a net channel) and SourceTV (a fake client
+// without one, which the engine still forwards sounds to). Bots and free slots are skipped.
+static bool IsSoundRecipient(int client)
+{
+	if (g_pEngine == NULL) {
+		return false;
+	}
+	if (g_pEngine->GetPlayerNetInfo(client) != NULL) {
+		return true;
+	}
+	if (g_pPlayerInfoManager == NULL || g_pGlobals == NULL || g_pGlobals->pEdicts == NULL
+		|| client < 1 || client > g_pGlobals->maxClients) {
+		return false;
+	}
+	edict_t* pEdict = &g_pGlobals->pEdicts[client];
+	IPlayerInfo* pInfo = g_pPlayerInfoManager->GetPlayerInfo(pEdict);
+	return pInfo != NULL && pInfo->IsConnected() && pInfo->IsHLTV();
+}
+
+//---------------------------------------------------------------------------------
+// Purpose: plays a sound on the reliable stream, so it can't be lost with a dropped packet.
+// For server plugins (e.g. spawn cues); clients can't run it (no FCVAR_GAMEDLL).
+// Disable with "-noreliablesound".
+//---------------------------------------------------------------------------------
+CON_COMMAND(te_reliable_sound, "Emit a precached sound reliably: <entity> <channel> <soundlevel> <volume> <pitch> <flags> <x,y,z|-> \"<sample>\" [client,client,...]")
+{
+	if (g_pEngineSound == NULL || g_pGlobals == NULL) {
+		Warning("[Tickrate_Enabler] te_reliable_sound: engine sound interface or gpGlobals not available.\n");
+		return;
+	}
+
+	char error[256];
+	if (!EmitReliableSoundCommand(args, g_pEngineSound, g_pGlobals->maxClients, IsSoundRecipient, error, sizeof(error))) {
+		Warning("[Tickrate_Enabler] te_reliable_sound: %s\n", error);
+	}
+}
+#endif
+
 //---------------------------------------------------------------------------------
 // Purpose: called when the plugin is loaded, load the interface we need from the engine
 //---------------------------------------------------------------------------------
@@ -180,6 +248,7 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 	// Used only to verify boomer vomit patch offsets; patching still works without it.
 	CGlobalVars* pGlobals = NULL;
 	IPlayerInfoManager* pPlayerInfoManager = reinterpret_cast<IPlayerInfoManager*>(gameServerFactory(INTERFACEVERSION_PLAYERINFOMANAGER, NULL));
+	g_pPlayerInfoManager = pPlayerInfoManager;
 	if (pPlayerInfoManager != NULL) {
 		pGlobals = pPlayerInfoManager->GetGlobalVars();
 	} else {
@@ -207,9 +276,14 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 
 	SH_ADD_HOOK(IServerGameDLL, GetTickInterval, g_pGameDll, SH_STATIC(Handler_GetTickInterval), false);
 
+	g_pGlobals = pGlobals;
+
 	LoadNextBotFixes(pGlobals);
 	LoadBoomerVomitDelay();
 	LoadBoomerVomitPierce(pGlobals);
+	LoadLagCompWindowFix();
+	LoadUpdateRateFix();
+	LoadReliableSound(interfaceFactory);
 
 	for (size_t i = 0; i < g_iResetCvarsCount; i++) {
 		g_ResetCvars[i].ClearSavedDefaults();
@@ -249,8 +323,19 @@ void L4DTickRate::Unload(void)
 	m_patchManager.UnpatchAll();
 	m_patchManager.UnregisterAll();
 
+	if (g_bConVarsRegistered) {
+		ConVar_Unregister();
+		g_bConVarsRegistered = false;
+	}
+	g_pEngineSound = NULL;
+	g_pPlayerInfoManager = NULL;
+
 	m_optionalPatchManager.UnpatchAll();
 	m_optionalPatchManager.UnregisterAll();
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+	g_pLagCompWindowPatch = NULL;
+#endif
+	g_pGlobals = NULL;
 	g_pNextBotGlobals = NULL;
 	g_pNbUpdateFrequency = NULL;
 
@@ -364,6 +449,104 @@ void L4DTickRate::LoadBoomerVomitPierce(CGlobalVars* pGlobals)
 }
 
 //---------------------------------------------------------------------------------
+// Purpose: OPT-IN. "-lagcompwindow <seconds>" makes shoves keep lag compensating their targets for
+// that long after the swing starts (vanilla: 5 usercmds = 50 ms at 100 tick, 166 ms at 30 tick).
+// Without the parameter the game's own window is kept.
+// Optional: a failure keeps the vanilla behaviour.
+//---------------------------------------------------------------------------------
+void L4DTickRate::LoadLagCompWindowFix()
+{
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	if (!CommandLine()->CheckParm("-lagcompwindow")) {
+		TELog("Lag compensation window: vanilla (5 usercmds); -lagcompwindow <seconds> to change it.");
+		return;
+	}
+
+#if defined (_LINUX)
+	float flWindow;
+	if (!LagCompWindowSecondsFromParam(CommandLine()->ParmValue("-lagcompwindow", 0.0f), flWindow)) {
+		TELog("Invalid '-lagcompwindow %s' (seconds, 0.01-1), lag compensation window left vanilla.", CommandLine()->ParmValue("-lagcompwindow", ""));
+		return;
+	}
+
+	try {
+		float flTickInterval = GetConfiguredTickInterval();
+		LagCompWindowPatch* pPatch = new LagCompWindowPatch(g_pGameDll, flWindow, flTickInterval);
+		m_optionalPatchManager.Register(pPatch);
+		pPatch->Patch();
+		g_pLagCompWindowPatch = pPatch;
+		TELog("Lag compensation window: %d usercmds (%.0f ms at %.0f tick; vanilla 5 usercmds).",
+			pPatch->GetWindowUsercmds(), pPatch->GetWindowUsercmds() * flTickInterval * 1000.0f, 1.0f / flTickInterval);
+	} catch (PatchException& e) {
+		TELog("Lag compensation window fix disabled (vanilla kept): %s", e.GetDescription());
+	}
+#else
+	TELog("Lag compensation window fix is only available on Linux servers.");
+#endif
+#endif
+}
+
+//---------------------------------------------------------------------------------
+// Purpose: above 100 tick, let the engine send one snapshot per tick instead of capping clients at
+// 100 snapshots per second (snapshots then go out on an uneven tick pattern). The cap follows the
+// tickrate. Disable with "-noupdateratefix". Linux only.
+// Optional: a failure keeps the engine's 100 cap.
+//---------------------------------------------------------------------------------
+void L4DTickRate::LoadUpdateRateFix()
+{
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	if (CommandLine()->CheckParm("-noupdateratefix")) {
+		TELog("Snapshot rate fix disabled by -noupdateratefix (engine cap 100/s).");
+		return;
+	}
+
+	int iCap = UpdateRateCapForTickInterval(GetConfiguredTickInterval());
+	if (iCap <= UPDATERATE_VANILLA_CAP) {
+		TELog("Snapshot rate fix not needed at this tickrate (engine cap 100/s).");
+		return;
+	}
+
+#if defined (_LINUX)
+	try {
+		ICodePatch* pPatch = new UpdateRateCapPatch(g_pEngine, iCap);
+		m_optionalPatchManager.Register(pPatch);
+		pPatch->Patch();
+		TELog("Snapshot rate cap raised to %d/s (engine default 100); set sv_minupdaterate / sv_maxupdaterate to %d for one snapshot per tick.", iCap, iCap);
+	} catch (PatchException& e) {
+		TELog("Snapshot rate fix disabled (engine cap 100/s kept): %s", e.GetDescription());
+	}
+#else
+	TELog("Snapshot rate fix is only available on Linux servers (engine cap 100/s).");
+#endif
+#endif
+}
+
+//---------------------------------------------------------------------------------
+// Purpose: registers te_reliable_sound. Disable with "-noreliablesound".
+//---------------------------------------------------------------------------------
+void L4DTickRate::LoadReliableSound(CreateInterfaceFn interfaceFactory)
+{
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	if (CommandLine()->CheckParm("-noreliablesound")) {
+		TELog("te_reliable_sound disabled by -noreliablesound.");
+		return;
+	}
+
+	g_pEngineSound = reinterpret_cast<IEngineSound*>(interfaceFactory(IENGINESOUND_SERVER_INTERFACE_VERSION, NULL));
+	if (g_pEngineSound == NULL || g_pGlobals == NULL) {
+		TELog("te_reliable_sound unavailable: 'IEngineSound' or gpGlobals not found.");
+		g_pEngineSound = NULL;
+		return;
+	}
+
+	g_pCVar = g_pCvar;
+	ConVar_Register(0);
+	g_bConVarsRegistered = true;
+	TELog("te_reliable_sound registered (-noreliablesound to disable).");
+#endif
+}
+
+//---------------------------------------------------------------------------------
 // Purpose: called once per server frame
 //---------------------------------------------------------------------------------
 void L4DTickRate::GameFrame(bool simulating)
@@ -372,6 +555,15 @@ void L4DTickRate::GameFrame(bool simulating)
 	if (g_pNextBotGlobals != NULL) {
 		UpdateNextBotFixes(g_pNbUpdateFrequency, g_pNextBotGlobals->interval_per_tick);
 	}
+#if defined (_LINUX)
+	if (g_pLagCompWindowPatch != NULL && g_pGlobals != NULL) {
+		int iOldWindow = g_pLagCompWindowPatch->GetWindowUsercmds();
+		g_pLagCompWindowPatch->SetTickInterval(g_pGlobals->interval_per_tick);
+		if (g_pLagCompWindowPatch->GetWindowUsercmds() != iOldWindow) {
+			TELog("Lag compensation window: %d usercmds (tick interval %.6f).", g_pLagCompWindowPatch->GetWindowUsercmds(), g_pGlobals->interval_per_tick);
+		}
+	}
+#endif
 #endif
 }
 
