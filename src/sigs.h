@@ -157,6 +157,79 @@ const int g_FrameTimeReadOffsets[] =
 	#define LAGCOMP_WINDOW_VANILLA_USERCMDS 5
 #endif
 
+/* Lag compensated hitboxes. L4D2 linux only.
+   CLagCompensationManager::BacktrackEntity moves an entity back to where the attacker saw it. It only
+   flushes the entity's bone cache when it also rewound the animation (LC_ANIMATION_CHANGED), and
+   FinishLagCompensation never flushes it when the entity is put back. Bullets never rewind the animation:
+   FireTerrorBullets asks for LAG_COMPENSATE_HITBOXES_ALONG_RAY but passes the default (zero) weapon
+   position, angles and range, so only entities within 100 units of the map origin qualify. */
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+	#define SYM_CLAGCOMPENSATIONMANAGER_BACKTRACKENTITY "_ZN23CLagCompensationManager15BacktrackEntityEP11CBaseEntityfP19CUtlFixedLinkedListI9LagRecordEPS3_S6_b"
+	#define SYM_CLAGCOMPENSATIONMANAGER_FINISHLAGCOMPENSATION "_ZN23CLagCompensationManager21FinishLagCompensationEP11CBasePlayer"
+	#define SYM_CLAGCOMPENSATIONMANAGER_RESTOREENTITYFROMRECORDS "_ZN23CLagCompensationManager24RestoreEntityFromRecordsEP11CBaseEntityP9LagRecordS3_b"
+	#define SYM_CBASEANIMATING_INVALIDATEBONECACHE "_ZN14CBaseAnimating19InvalidateBoneCacheEv"
+	#define SYM_FIRETERRORBULLETS "_Z17FireTerrorBulletsiRK6VectorRK6QAngle10CSWeaponIDiif"
+	#define SYM_VEC3_ORIGIN "vec3_origin"
+	#define SYM_VEC3_ANGLE "vec3_angle"
+
+	// Change flags of a rewound entity: origin 100h, angles 200h, bounds 400h, animation 800h.
+	#define LAGCOMP_CHANGE_ANIMATION 0x800
+	#define LAGCOMP_CHANGE_ANY 0xF00
+
+	// BacktrackEntity, after sv_lagflushbonecache was checked:
+	// F7 85 E8 FE FF FF 00 08 00 00	test dword ptr [ebp-118h], 800h	(flags & LC_ANIMATION_CHANGED)
+	// 0F 84 <rel32>				jz <no flush>
+	#define LAGCOMP_FLUSH_TEST_OFFSET 0xEF8
+	DEFINE_SIG(LAGCOMP_FLUSH_TEST_BYTES, "\xF7\x85\xE8\xFE\xFF\xFF\x00\x08\x00\x00\x0F\x84");
+	#define LAGCOMP_FLUSH_MASK_OFFSET (LAGCOMP_FLUSH_TEST_OFFSET + 6)
+
+	// 8B 45 0C 8B 4D 0C 8B 00		mov eax, [ebp+0Ch]; mov ecx, [ebp+0Ch]; mov eax, [eax]	(entity)
+	// 89 0C 24 FF 90 F0 00 00 00	mov [esp], ecx; call [eax+0F0h]		(entity->GetBaseAnimating())
+	// 85 C0 0F 84 <rel32>			test eax, eax; jz <no flush>
+	#define LAGCOMP_FLUSH_GETANIMATING_OFFSET 0xF08
+	DEFINE_SIG(LAGCOMP_FLUSH_GETANIMATING_BYTES, "\x8B\x45\x0C\x8B\x4D\x0C\x8B\x00\x89\x0C\x24\xFF\x90\xF0\x00\x00\x00\x85\xC0\x0F\x84");
+	#define CBASEENTITY_GETBASEANIMATING_VTABLE_OFFSET 0xF0
+
+	// 8B 45 0C 8B 55 0C 8B 00 89 14 24 FF 90 F0 00 00 00	(entity->GetBaseAnimating() again)
+	// 89 04 24 E8 <rel32>			mov [esp], eax; call CBaseAnimating::InvalidateBoneCache
+	#define LAGCOMP_FLUSH_INVALIDATE_OFFSET 0xF21
+	DEFINE_SIG(LAGCOMP_FLUSH_INVALIDATE_BYTES, "\x8B\x45\x0C\x8B\x55\x0C\x8B\x00\x89\x14\x24\xFF\x90\xF0\x00\x00\x00\x89\x04\x24\xE8");
+	#define LAGCOMP_FLUSH_INVALIDATE_CALL_OFFSET 0xF35
+	#define LAGCOMP_FLUSH_CODE_SIZE (LAGCOMP_FLUSH_INVALIDATE_CALL_OFFSET + 5)
+
+	// FinishLagCompensation, for every entity that was rewound:
+	// C7 44 24 10 01 00 00 00		mov dword ptr [esp+10h], 1
+	// 89 4C 24 0C 89 44 24 08		mov [esp+0Ch], ecx; mov [esp+8], eax	(change, restore records)
+	// 89 54 24 04 89 34 24			mov [esp+4], edx; mov [esp], esi		(entity, this)
+	// E8 <rel32>					call RestoreEntityFromRecords
+	#define LAGCOMP_RESTORE_ARGS_OFFSET 0x15A
+	DEFINE_SIG(LAGCOMP_RESTORE_ARGS_BYTES, "\xC7\x44\x24\x10\x01\x00\x00\x00\x89\x4C\x24\x0C\x89\x44\x24\x08\x89\x54\x24\x04\x89\x34\x24\xE8");
+	#define LAGCOMP_RESTORE_CALL_OFFSET 0x171
+	#define LAGCOMP_RESTORE_CODE_SIZE (LAGCOMP_RESTORE_CALL_OFFSET + 5)
+
+	// FireTerrorBullets:
+	// A1 <&lagcompensation>		mov eax, lagcompensation
+	#define BULLET_LAGCOMP_LOAD_OFFSET 0x11C
+	// 8B 10 89 04 24				mov edx, [eax]; mov [esp], eax
+	// C7 44 24 14 00 00 00 00		mov dword ptr [esp+14h], 0			(weapon range 0.0)
+	// C7 44 24 10 <&vec3_angle>	mov dword ptr [esp+10h], &vec3_angle	(weapon angles)
+	#define BULLET_LAGCOMP_ARGS_OFFSET 0x121
+	DEFINE_SIG(BULLET_LAGCOMP_ARGS_BYTES, "\x8B\x10\x89\x04\x24\xC7\x44\x24\x14\x00\x00\x00\x00\xC7\x44\x24\x10");
+	#define BULLET_LAGCOMP_ANGLES_OPERAND_OFFSET 0x132
+	// C7 44 24 0C <&vec3_origin>	mov dword ptr [esp+0Ch], &vec3_origin	(weapon position)
+	#define BULLET_LAGCOMP_ORIGIN_OFFSET 0x136
+	DEFINE_SIG(BULLET_LAGCOMP_ORIGIN_BYTES, "\xC7\x44\x24\x0C");
+	#define BULLET_LAGCOMP_ORIGIN_OPERAND_OFFSET 0x13A
+	// C7 44 24 08 02 00 00 00		mov dword ptr [esp+8], 2			(LAG_COMPENSATE_HITBOXES_ALONG_RAY)
+	// 89 5C 24 04 FF 12			mov [esp+4], ebx; call [edx]		(StartLagCompensation(player, ...))
+	#define BULLET_LAGCOMP_TYPE_OFFSET 0x13E
+	DEFINE_SIG(BULLET_LAGCOMP_TYPE_BYTES, "\xC7\x44\x24\x08\x02\x00\x00\x00\x89\x5C\x24\x04\xFF\x12");
+	#define BULLET_LAGCOMP_TYPE_IMMEDIATE_OFFSET (BULLET_LAGCOMP_TYPE_OFFSET + 4)
+	#define BULLET_LAGCOMP_CODE_SIZE (BULLET_LAGCOMP_TYPE_OFFSET + BULLET_LAGCOMP_TYPE_BYTES_SIZE)
+	#define LAG_COMPENSATE_HITBOXES 1
+	#define LAG_COMPENSATE_HITBOXES_ALONG_RAY 2
+#endif
+
 /* engine: CGameClient::SetUpdateRate / CBaseClient::SetUpdateRate clamp every client's snapshot rate to
    100 per second. L4D2 linux only (engine_srv.so). */
 #if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
@@ -185,6 +258,55 @@ const int g_FrameTimeReadOffsets[] =
 	// E9 <rel32>				jmp CBaseClient::SetUpdateRate
 	#define UPDATERATE_GAMECLIENT_JMP_OFFSET 0x59
 	#define UPDATERATE_GAMECLIENT_CODE_SIZE (UPDATERATE_GAMECLIENT_JMP_OFFSET + 5)
+#endif
+
+/* engine: CSteam3Server::OnValidateAuthTicketResponse(ValidateAuthTicketResponse_t*) gets Steam's answer to
+   a client's auth ticket. A failed answer goes to OnValidateAuthTicketResponseHelper(client, response),
+   which kicks the client ("No Steam logon" for responses 1, 6, 7 and 8). L4D2 linux only (engine_srv.so). */
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+	#define SYM_CSTEAM3SERVER_ONVALIDATEAUTHTICKETRESPONSE "_ZN13CSteam3Server28OnValidateAuthTicketResponseEP28ValidateAuthTicketResponse_t"
+	#define SYM_CSTEAM3SERVER_ONVALIDATEAUTHTICKETRESPONSEHELPER "_ZN13CSteam3Server34OnValidateAuthTicketResponseHelperEP11CBaseClient20EAuthSessionResponse"
+
+	// The symbol is a short wrapper; the function's code is in a separate part (".part.NN") it jumps to.
+	// 8B 88 98 00 00 00		mov ecx, [eax+98h]				(server mode)
+	// 85 C9 7E 06			test ecx, ecx; jle +6
+	// 5D					pop ebp
+	// E9 <rel32>				jmp <body>
+	#define STEAMAUTH_WRAPPER_TAIL_OFFSET 0x10
+	DEFINE_SIG(STEAMAUTH_WRAPPER_TAIL_BYTES, "\x8B\x88\x98\x00\x00\x00\x85\xC9\x7E\x06\x5D\xE9");
+	#define STEAMAUTH_WRAPPER_JMP_OFFSET 0x1B
+	#define STEAMAUTH_WRAPPER_CODE_SIZE (STEAMAUTH_WRAPPER_JMP_OFFSET + 5)
+
+	// Offsets into the body. ebx = client (CBaseClient*), esi = the response struct, edi = this.
+	// 8B 46 08				mov eax, [esi+8]				(m_eAuthSessionResponse)
+	// 85 C0 0F 85 D4 00 00 00	test eax, eax; jnz <failure>
+	#define STEAMAUTH_BODY_RESPONSE_OFFSET 0x31
+	DEFINE_SIG(STEAMAUTH_BODY_RESPONSE_BYTES, "\x8B\x46\x08\x85\xC0\x0F\x85\xD4\x00\x00\x00");
+
+	// C6 83 17 02 00 00 01	mov byte ptr [ebx+217h], 1		(client->m_bFullyAuthenticated = true)
+	#define STEAMAUTH_BODY_AUTHENTICATED_OFFSET 0xAC
+	DEFINE_SIG(STEAMAUTH_BODY_AUTHENTICATED_BYTES, "\xC6\x83\x17\x02\x00\x00\x01");
+	#define STEAMAUTH_CLIENT_FULLYAUTHENTICATED_OFFSET 0x217
+
+	// 89 44 24 08			mov [esp+8], eax				(response)
+	// 89 5C 24 04			mov [esp+4], ebx				(client)
+	// 89 3C 24				mov [esp], edi					(this)
+	// E8 <rel32>				call OnValidateAuthTicketResponseHelper
+	#define STEAMAUTH_BODY_FAILURE_OFFSET 0x110
+	DEFINE_SIG(STEAMAUTH_BODY_FAILURE_BYTES, "\x89\x44\x24\x08\x89\x5C\x24\x04\x89\x3C\x24\xE8");
+	#define STEAMAUTH_BODY_HELPER_CALL_OFFSET 0x11B
+
+	// 89 1C 24 FF 50 2C		mov [esp], ebx; call [eax+2Ch]	(client->GetNetworkIDString())
+	#define STEAMAUTH_BODY_NETWORKID_OFFSET 0x128
+	DEFINE_SIG(STEAMAUTH_BODY_NETWORKID_BYTES, "\x89\x1C\x24\xFF\x50\x2C");
+	#define STEAMAUTH_BODY_CODE_SIZE (STEAMAUTH_BODY_NETWORKID_OFFSET + STEAMAUTH_BODY_NETWORKID_BYTES_SIZE)
+
+	// OnValidateAuthTicketResponseHelper:
+	// 8B 5D 0C 8B 75 10 8B 7D 08	mov ebx, [ebp+0Ch]; mov esi, [ebp+10h]; mov edi, [ebp+8]	(client, response, this)
+	// 8B 03 89 1C 24 FF 50 1C	mov eax, [ebx]; mov [esp], ebx; call [eax+1Ch]			(client->GetClientName())
+	#define STEAMAUTH_HELPER_ARGS_OFFSET 0x9
+	DEFINE_SIG(STEAMAUTH_HELPER_ARGS_BYTES, "\x8B\x5D\x0C\x8B\x75\x10\x8B\x7D\x08\x8B\x03\x89\x1C\x24\xFF\x50\x1C");
+	#define STEAMAUTH_HELPER_CODE_SIZE (STEAMAUTH_HELPER_ARGS_OFFSET + STEAMAUTH_HELPER_ARGS_BYTES_SIZE)
 #endif
 
 

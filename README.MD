@@ -2,15 +2,16 @@
 
 A fork of **Tickrate Enabler** (originally by ProdigySim, maintained at
 [accelerator74/Tickrate-Enabler](https://github.com/accelerator74/Tickrate-Enabler)).
-Everything the original does is kept; this fork adds **L4D2 fixes for common infected and the witch
-on servers that lower `nb_update_frequency`** together with the tickrate.
-See [What's new in this fork](#whats-new-in-this-fork).
+Everything the original does is kept; this fork adds **L4D2 fixes for high tickrate servers**: common
+infected and witch fixes for a lowered `nb_update_frequency`, a real snapshot rate above 100 tick,
+lag compensated hitboxes, boomer vomit changes, reliable sounds and an option against "No Steam logon"
+kicks. See [What's new in this fork](#whats-new-in-this-fork).
 
 For the original project, its history and issues, please refer to the
 [upstream repository](https://github.com/accelerator74/Tickrate-Enabler).
 
 Downloads: see the [Releases](../../releases) page of this repository (`.tar.gz` packages contain the
-`addons` folder ready to drop into your server).
+`addons` folder ready to drop into your server). Releases contain Linux builds only.
 
 ### What's new in this fork
 
@@ -25,13 +26,21 @@ L4D2 only (L4D1 builds behave exactly like upstream):
 | Change | Boomer vomit passes through survivors, so the survivors behind the first one get covered too (Linux) | automatic, `-novomitpierce` for vanilla |
 | Fix | Above 100 tick every client gets one snapshot per tick: the engine's hard cap of 100 snapshots/s follows the tickrate (e.g. 108/s at 108 tick, 128/s at 128 tick) (Linux) | automatic, `-noupdateratefix` for vanilla |
 | New | `te_reliable_sound` server command: plays a sound on the reliable stream so it can't be lost with a dropped packet (for plugins, e.g. spawn cues) | automatic, `-noreliablesound` to disable |
+| Change | Players are no longer kicked with "No Steam logon" when Steam rejects their auth ticket; every failed auth response is logged (Linux) | automatic, `-nosteamlogonfix` for vanilla |
+| Fix | Lag compensation tests hitboxes where the attacker saw the target: the cached bones are flushed when an entity is rewound and when it is put back (Linux) | automatic, `-nobonecachefix` for vanilla |
+| Fix | Bullets rewind the target's animation along with its position, as lag compensation was meant to (Linux) | automatic, `-nohitboxanimfix` for vanilla |
 | Option | Shoves can keep lag compensating their targets longer than the vanilla 5 ticks (50 ms at 100 tick) (Linux) | off by default, `-lagcompwindow <seconds>` |
+
+Apart from the lag compensation window, every change is on by default; launch parameters only turn it
+off or tune it, so updating the `.so` is enough to get all fixes.
 
 The NextBot fixes can be disabled with the `-nonextbotfixes` launch parameter. Details are in
 [NextBot fixes](#nextbot-fixes-l4d2-only), [Boomer vomit delay](#boomer-vomit-delay-l4d2-only),
 [Boomer vomit pierce](#boomer-vomit-pierce-l4d2-linux-only),
 [Snapshot rate above 100 tick](#snapshot-rate-above-100-tick-l4d2-linux-only),
-[Reliable sounds](#reliable-sounds-te_reliable_sound-l4d2-only) and
+[Reliable sounds](#reliable-sounds-te_reliable_sound-l4d2-only),
+["No Steam logon" kicks](#no-steam-logon-kicks-l4d2-linux-only),
+[Lag compensated hitboxes](#lag-compensated-hitboxes-l4d2-linux-only) and
 [Lag compensation window](#lag-compensation-window-l4d2-linux-only-opt-in) below.
 
 ### Description
@@ -52,6 +61,15 @@ L4D2 (Linux): the boomer's vomit stream passes through survivors instead of stop
 L4D2 (Linux): above 100 tick, removes the engine's 100 snapshots per second cap so clients can get one
 snapshot every tick (see "Snapshot rate above 100 tick" below).
 
+L4D2: adds the `te_reliable_sound` server command, which sends a sound over the reliable stream so packet
+loss can't drop it (see "Reliable sounds" below).
+
+L4D2 (Linux): lag compensation tests shots against hitboxes posed where the shooter saw the target
+(see "Lag compensated hitboxes" below).
+
+L4D2 (Linux): players are no longer kicked with "No Steam logon" when Steam rejects their auth ticket
+(see "No Steam logon kicks" below).
+
 Removes global upper-limits on the max client data rate (was 30000),
 and removes the (30k) limits on rate control cvars:
 - sv_maxrate
@@ -60,8 +78,10 @@ and removes the (30k) limits on rate control cvars:
 
 ### Instructions
 
-1. Place tickrate_enabler.dll (Windows) or tickrate_enabler.so (Linux) in your server's addons folder.
-2. Place tickrate_enabler.vdf (L4D2) or tickrate_enabler_l4d1.vdf (L4D1) in your server's addons folder.
+1. Extract the release package into your game folder (`left4dead2/` or `left4dead/`), so that you get
+   `addons/tickrate_enabler/tickrate_enabler.so` (`.dll` on Windows, if you build it yourself).
+2. The package also puts tickrate_enabler.vdf (L4D2) or tickrate_enabler_l4d1.vdf (L4D1) in your server's
+   addons folder; it loads the binary from `addons/tickrate_enabler/`.
 3. Add "-tickrate <desired_tickrate>" to your server's launch parameters. e.g. -tickrate 100
 
     Optional (L4D2): "-vomitdelay <seconds>" sets the boomer vomit hit delay, e.g. -vomitdelay 0.1
@@ -72,6 +92,11 @@ and removes the (30k) limits on rate control cvars:
     Optional (L4D2, Linux): "-noupdateratefix" keeps the engine's 100 snapshots/s cap above 100 tick.
 
     Optional (L4D2): "-noreliablesound" doesn't register the `te_reliable_sound` command.
+
+    Optional (L4D2, Linux): "-nosteamlogonfix" restores the engine's "No Steam logon" kicks.
+
+    Optional (L4D2, Linux): "-nobonecachefix" and "-nohitboxanimfix" restore the vanilla hitbox lag
+    compensation (see "Lag compensated hitboxes" below).
 
     Optional (L4D2, Linux): "-lagcompwindow <seconds>" lengthens the shove lag compensation window
     (off by default, see below).
@@ -191,6 +216,65 @@ unchanged, only reliably. Only the server (console, rcon, plugins via `ServerCom
   which is never reliable.
 - `-noreliablesound` doesn't register the command.
 
+### "No Steam logon" kicks (L4D2, Linux only)
+
+Steam answers every connecting client's auth ticket, and the engine kicks the client with "No Steam logon"
+when the answer is one of: 1 (user not connected to Steam), 6 (ticket canceled), 7 (ticket already used)
+or 8 (ticket invalid). Players who are logged in to Steam get these too, e.g. after joining from a lobby,
+and then keep getting them until they restart the game or Steam (reported in
+[ValveSoftware/Source-1-Games#7758](https://github.com/ValveSoftware/Source-1-Games/issues/7758)).
+
+With the patch those four answers no longer kick: the client stays and the failure is written to the log,
+e.g.
+
+    Steam auth failure for "Player" (STEAM_1:0:12345): code 8 (AuthTicketInvalid), validated by Steam earlier -> kept on the server (vanilla: "No Steam logon" kick).
+
+Every other failed answer (no license, VAC ban, account used elsewhere, VAC check timeout) is logged the
+same way and still kicked by the engine.
+
+What it costs: the server stops enforcing those answers.
+
+- A client Steam validated earlier in the connection ("validated" in the log) keeps its verified Steam ID;
+  nothing changes for it.
+- A client Steam never validated ("NOT validated") stays on the server with the Steam ID its own ticket
+  claims. The engine still reports it as not authenticated, so SourceMod doesn't authorize it: no admin
+  rights and no `OnClientAuthorized` / `OnClientPostAdminCheck`, which also means SourceMod-side ban checks
+  don't run for it. Someone without a valid Steam session can therefore stay and play.
+
+`-nosteamlogonfix` keeps the engine's kicks (failed answers are then not logged by the plugin). If the
+code can't be located after a game update, the kicks stay and a console message explains why.
+
+### Lag compensated hitboxes (L4D2, Linux only)
+
+When a player shoots, the server moves the other players and infected back to where that player saw
+them, traces the shot, and puts them back. Two things go wrong with the hitboxes in the vanilla game.
+Neither depends on the tickrate.
+
+**Cached bones.** Hitboxes are built from an entity's bones, and the bones are cached for up to 0.1 s.
+The game only throws the cache away when lag compensation also rewound the entity's animation, which it
+does for no attack at all (see below). So after an entity is moved back, the shot can be tested against
+bones cached for another position: the entity's real one, or the one an earlier shooter rewound it to
+(the difference is the target's speed times the lag, e.g. 15 units at 250 u/s and 60 ms). The bones built
+during a shot also stay cached after the entity is put back.
+With the fix the cache is flushed whenever an entity's position, angles or bounds were rewound, and
+again when it is restored. `sv_lagflushbonecache 0` still disables the first flush, as in the game's code.
+`-nobonecachefix` restores the vanilla behaviour.
+
+**Animation.** `FireTerrorBullets` asks lag compensation to rewind the animation of entities near the
+weapon's ray, but leaves the ray at its default: position (0,0,0), angles (0,0,0), range 0. Only entities
+within 100 units of the map origin qualify, so in practice bullets are tested against hitboxes posed by
+the target's *current* animation, moved to its old position.
+With the fix every entity rewound for a shot gets its animation (sequence, cycle, layers) rewound too,
+which is what other Source games do. Pose parameters (aim, movement blend) are not part of the game's
+lag compensation records and stay current.
+`-nohitboxanimfix` restores the vanilla behaviour.
+
+Players and common infected are animated by the client itself, so the server's animation history is a
+model of what clients show, not a copy; rewinding it removes the part of the error that comes from the
+shooter's lag. Shoves, melee, claws and vomit use bounding boxes only and are not changed, apart from
+the bone cache flush. Both fixes are logged at startup; if the code can't be located after a game
+update, the affected fix is skipped with a console message. Linux servers only.
+
 ### Lag compensation window (L4D2, Linux only, opt-in)
 
 `CTerrorPlayer::WantsLagCompensationOnEntity` decides which players and common infected get rewound to
@@ -207,6 +291,13 @@ current tickrate (never fewer than the vanilla 5, at most 127), e.g. `-lagcompwi
 at 108 tick. The applied window is written to the log. Linux servers only.
 
 ### Changelog / TODO
+
+1.9.0 (Remastered fork):
+- L4D2 (Linux): players are no longer kicked with "No Steam logon" when Steam rejects their auth ticket;
+  failed auth responses are logged (`-nosteamlogonfix` for vanilla).
+- L4D2 (Linux): lag compensation flushes the cached bones of rewound and restored entities
+  (`-nobonecachefix` for vanilla), and bullets rewind the target's animation (`-nohitboxanimfix` for vanilla).
+- Regression tests and the real-binary check cover both new patches.
 
 1.8.0 (Remastered fork):
 - L4D2 (Linux): above 100 tick the engine's 100 snapshots/s cap follows the tickrate, so clients can get

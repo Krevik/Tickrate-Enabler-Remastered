@@ -53,14 +53,16 @@
 #include "maxrate_patches.h"
 #include "nextbotfixes.h"
 #include "lagcompfix.h"
+#include "hitboxlagcompfix.h"
 #include "reliablesound.h"
 #include "updateratefix.h"
+#include "steamlogonfix.h"
 #include "engine/IEngineSound.h"
 
  // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-#define TE_VERSION "1.8.0"
+#define TE_VERSION "1.9.0"
 
 L4DTickRate g_L4DTickRatePlugin;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR(L4DTickRate, IServerPluginCallbacks, INTERFACEVERSION_ISERVERPLUGINCALLBACKS, g_L4DTickRatePlugin);
@@ -282,8 +284,10 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 	LoadBoomerVomitDelay();
 	LoadBoomerVomitPierce(pGlobals);
 	LoadLagCompWindowFix();
+	LoadHitboxLagCompFixes();
 	LoadUpdateRateFix();
 	LoadReliableSound(interfaceFactory);
+	LoadSteamLogonFix();
 
 	for (size_t i = 0; i < g_iResetCvarsCount; i++) {
 		g_ResetCvars[i].ClearSavedDefaults();
@@ -487,6 +491,49 @@ void L4DTickRate::LoadLagCompWindowFix()
 }
 
 //---------------------------------------------------------------------------------
+// Purpose: hitboxes of lag compensated targets.
+// 1. An entity rewound for a shot / swing gets its cached bones flushed, and again when it is put
+//    back, so hitboxes are tested at the rewound position. Disable with "-nobonecachefix".
+// 2. Bullets rewind the target's animation as well (vanilla asks for it along a zero-length ray, so
+//    it never happens). Disable with "-nohitboxanimfix".
+// Linux only. Optional: a failure keeps the vanilla behaviour of that part.
+//---------------------------------------------------------------------------------
+void L4DTickRate::LoadHitboxLagCompFixes()
+{
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+#if defined (_LINUX)
+	if (CommandLine()->CheckParm("-nobonecachefix")) {
+		TELog("Lag compensation bone cache fix disabled by -nobonecachefix.");
+	} else {
+		try {
+			ICodePatch* pPatch = new LagCompBoneCachePatch(g_pGameDll);
+			m_optionalPatchManager.Register(pPatch);
+			pPatch->Patch();
+			TELog("Lag compensation flushes cached bones of rewound and restored entities (-nobonecachefix for vanilla).");
+		} catch (PatchException& e) {
+			TELog("Lag compensation bone cache fix disabled (vanilla kept): %s", e.GetDescription());
+		}
+	}
+
+	if (CommandLine()->CheckParm("-nohitboxanimfix")) {
+		TELog("Bullet hitbox animation rewind disabled by -nohitboxanimfix.");
+	} else {
+		try {
+			ICodePatch* pPatch = new BulletHitboxLagCompPatch(g_pGameDll);
+			m_optionalPatchManager.Register(pPatch);
+			pPatch->Patch();
+			TELog("Bullets rewind the animation of lag compensated targets (-nohitboxanimfix for vanilla).");
+		} catch (PatchException& e) {
+			TELog("Bullet hitbox animation rewind disabled (vanilla kept): %s", e.GetDescription());
+		}
+	}
+#else
+	TELog("Lag compensated hitbox fixes are only available on Linux servers.");
+#endif
+#endif
+}
+
+//---------------------------------------------------------------------------------
 // Purpose: above 100 tick, let the engine send one snapshot per tick instead of capping clients at
 // 100 snapshots per second (snapshots then go out on an uneven tick pattern). The cap follows the
 // tickrate. Disable with "-noupdateratefix". Linux only.
@@ -543,6 +590,45 @@ void L4DTickRate::LoadReliableSound(CreateInterfaceFn interfaceFactory)
 	ConVar_Register(0);
 	g_bConVarsRegistered = true;
 	TELog("te_reliable_sound registered (-noreliablesound to disable).");
+#endif
+}
+
+#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
+// Every failed Steam auth response, kept or kicked, so the log shows what Steam answered and when.
+static void LogSteamAuthFailure(const char* name, const char* networkId, int response, bool validated, bool kept)
+{
+	TELog("Steam auth failure for \"%s\" (%s): code %d (%s), %s by Steam earlier -> %s.",
+		name, networkId, response, SteamAuthResponseName(response),
+		validated ? "validated" : "NOT validated",
+		kept ? "kept on the server (vanilla: \"No Steam logon\" kick)" : "kicked by the engine");
+}
+#endif
+
+//---------------------------------------------------------------------------------
+// Purpose: clients are no longer kicked with "No Steam logon" when Steam rejects their auth ticket
+// (responses 1, 6, 7, 8); every failed auth response is logged. Disable with "-nosteamlogonfix".
+// Linux only. Optional: a failure keeps the engine's kick.
+//---------------------------------------------------------------------------------
+void L4DTickRate::LoadSteamLogonFix()
+{
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	if (CommandLine()->CheckParm("-nosteamlogonfix")) {
+		TELog("\"No Steam logon\" kick fix disabled by -nosteamlogonfix.");
+		return;
+	}
+
+#if defined (_LINUX)
+	try {
+		ICodePatch* pPatch = new SteamLogonKickPatch(g_pEngine, LogSteamAuthFailure);
+		m_optionalPatchManager.Register(pPatch);
+		pPatch->Patch();
+		TELog("\"No Steam logon\" kicks disabled: clients stay when Steam rejects their auth ticket, failures are logged here (-nosteamlogonfix for vanilla).");
+	} catch (PatchException& e) {
+		TELog("\"No Steam logon\" kick fix disabled (engine kick kept): %s", e.GetDescription());
+	}
+#else
+	TELog("\"No Steam logon\" kick fix is only available on Linux servers.");
+#endif
 #endif
 }
 
