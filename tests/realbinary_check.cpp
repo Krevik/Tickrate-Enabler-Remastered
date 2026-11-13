@@ -216,63 +216,6 @@ int main(int argc, char** argv)
 	Check(BranchesTo(engine, gameClient + UPDATERATE_GAMECLIENT_JMP_OFFSET, 0xE9, SYM_CBASECLIENT_SETUPDATERATE),
 		"CGameClient::SetUpdateRate: jmp CBaseClient::SetUpdateRate");
 
-	uint32_t authWrapper = engine.Symbol(SYM_CSTEAM3SERVER_ONVALIDATEAUTHTICKETRESPONSE);
-	uint32_t authHelper = engine.Symbol(SYM_CSTEAM3SERVER_ONVALIDATEAUTHTICKETRESPONSEHELPER);
-	Check(authWrapper != 0 && BytesAt(engine, authWrapper + STEAMAUTH_WRAPPER_TAIL_OFFSET, STEAMAUTH_WRAPPER_TAIL_BYTES,
-		STEAMAUTH_WRAPPER_TAIL_BYTES_SIZE), "CSteam3Server::OnValidateAuthTicketResponse: jmp to its body");
-	uint32_t authBody = 0;
-	const unsigned char* authJump = engine.At(authWrapper + STEAMAUTH_WRAPPER_JMP_OFFSET, 5);
-	if (authWrapper != 0 && authJump != NULL)
-	{
-		int32_t displacement;
-		memcpy(&displacement, authJump + 1, 4);
-		authBody = authWrapper + STEAMAUTH_WRAPPER_JMP_OFFSET + 5 + displacement;
-	}
-	Check(authBody != 0 && BytesAt(engine, authBody + STEAMAUTH_BODY_RESPONSE_OFFSET, STEAMAUTH_BODY_RESPONSE_BYTES,
-		STEAMAUTH_BODY_RESPONSE_BYTES_SIZE), "auth response: response check");
-	Check(authBody != 0 && BytesAt(engine, authBody + STEAMAUTH_BODY_AUTHENTICATED_OFFSET, STEAMAUTH_BODY_AUTHENTICATED_BYTES,
-		STEAMAUTH_BODY_AUTHENTICATED_BYTES_SIZE), "auth response: m_bFullyAuthenticated = true");
-	Check(authBody != 0 && BytesAt(engine, authBody + STEAMAUTH_BODY_FAILURE_OFFSET, STEAMAUTH_BODY_FAILURE_BYTES,
-		STEAMAUTH_BODY_FAILURE_BYTES_SIZE)
-		&& BranchesTo(engine, authBody + STEAMAUTH_BODY_HELPER_CALL_OFFSET, 0xE8, SYM_CSTEAM3SERVER_ONVALIDATEAUTHTICKETRESPONSEHELPER),
-		"auth response: call OnValidateAuthTicketResponseHelper");
-	Check(authBody != 0 && BytesAt(engine, authBody + STEAMAUTH_BODY_NETWORKID_OFFSET, STEAMAUTH_BODY_NETWORKID_BYTES,
-		STEAMAUTH_BODY_NETWORKID_BYTES_SIZE), "auth response: call GetNetworkIDString");
-	Check(authHelper != 0 && BytesAt(engine, authHelper + STEAMAUTH_HELPER_ARGS_OFFSET, STEAMAUTH_HELPER_ARGS_BYTES,
-		STEAMAUTH_HELPER_ARGS_BYTES_SIZE), "auth failure helper: arguments, call GetClientName");
-
-	// The helper's switch: responses 1, 6, 7 and 8 (and no others) share the "No Steam logon" branch.
-	//   +0x52: 83 FE 08 / 0F 87 <rel32> / FF 24 B5 <table>	cmp esi, 8; ja <default>; jmp [esi*4 + table]
-	//   branch: 83 BF 98 00 00 00 01 / 74 1F / 8B 03 / C7 45 0C <string>
-	bool noLogonBranches = false;
-	const unsigned char* authSwitch = engine.At(authHelper + 0x52, 16);
-	if (authHelper != 0 && authSwitch != NULL && memcmp(authSwitch, "\x83\xFE\x08\x0F\x87", 5) == 0
-		&& memcmp(authSwitch + 9, "\xFF\x24\xB5", 3) == 0)
-	{
-		uint32_t table;
-		memcpy(&table, authSwitch + 12, 4);
-		const unsigned char* entries = engine.At(table, 9 * 4);
-		uint32_t branch[9] = {};
-		if (entries != NULL)
-		{
-			memcpy(branch, entries, sizeof(branch));
-		}
-		const unsigned char* noLogon = engine.At(branch[1], 18);
-		uint32_t message = 0;
-		if (noLogon != NULL && memcmp(noLogon, "\x83\xBF\x98\x00\x00\x00\x01\x74\x1F\x8B\x03\xC7\x45\x0C", 14) == 0)
-		{
-			memcpy(&message, noLogon + 14, 4);
-		}
-		const unsigned char* text = engine.At(message, 16);
-		noLogonBranches = text != NULL && memcmp(text, "No Steam logon\n", 16) == 0;
-		for (int response = 0; response < 9; response++)
-		{
-			const bool expected = response == 1 || response == 6 || response == 7 || response == 8;
-			noLogonBranches = noLogonBranches && (branch[response] == branch[1]) == expected;
-		}
-	}
-	Check(noLogonBranches, "auth failure helper: responses 1, 6, 7, 8 kick with \"No Steam logon\"");
-
 	printf(g_Failures == 0 ? "all patch sites match\n" : "%d patch site(s) don't match\n", g_Failures);
 	return g_Failures == 0 ? 0 : 1;
 }

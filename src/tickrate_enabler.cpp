@@ -54,15 +54,12 @@
 #include "nextbotfixes.h"
 #include "lagcompfix.h"
 #include "hitboxlagcompfix.h"
-#include "reliablesound.h"
 #include "updateratefix.h"
-#include "steamlogonfix.h"
-#include "engine/IEngineSound.h"
 
  // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-#define TE_VERSION "1.9.0"
+#define TE_VERSION "2.0.0"
 
 L4DTickRate g_L4DTickRatePlugin;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR(L4DTickRate, IServerPluginCallbacks, INTERFACEVERSION_ISERVERPLUGINCALLBACKS, g_L4DTickRatePlugin);
@@ -88,11 +85,6 @@ static CGlobalVars* g_pGlobals = NULL;
 #if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
 static LagCompWindowPatch* g_pLagCompWindowPatch = NULL;
 #endif
-
-// te_reliable_sound
-static IEngineSound* g_pEngineSound = NULL;
-static IPlayerInfoManager* g_pPlayerInfoManager = NULL;
-static bool g_bConVarsRegistered = false;
 
 CvarInfo g_ResetCvars[] = { "sv_maxrate", "sv_minrate", "net_splitpacket_maxrate" };
 size_t g_iResetCvarsCount = sizeof(g_ResetCvars) / sizeof(g_ResetCvars[0]);
@@ -182,45 +174,6 @@ static float GetConfiguredTickInterval()
 	return 1.0f / 30.0f;
 }
 
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
-// Clients a sound is sent to: connected humans (they have a net channel) and SourceTV (a fake client
-// without one, which the engine still forwards sounds to). Bots and free slots are skipped.
-static bool IsSoundRecipient(int client)
-{
-	if (g_pEngine == NULL) {
-		return false;
-	}
-	if (g_pEngine->GetPlayerNetInfo(client) != NULL) {
-		return true;
-	}
-	if (g_pPlayerInfoManager == NULL || g_pGlobals == NULL || g_pGlobals->pEdicts == NULL
-		|| client < 1 || client > g_pGlobals->maxClients) {
-		return false;
-	}
-	edict_t* pEdict = &g_pGlobals->pEdicts[client];
-	IPlayerInfo* pInfo = g_pPlayerInfoManager->GetPlayerInfo(pEdict);
-	return pInfo != NULL && pInfo->IsConnected() && pInfo->IsHLTV();
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: plays a sound on the reliable stream, so it can't be lost with a dropped packet.
-// For server plugins (e.g. spawn cues); clients can't run it (no FCVAR_GAMEDLL).
-// Disable with "-noreliablesound".
-//---------------------------------------------------------------------------------
-CON_COMMAND(te_reliable_sound, "Emit a precached sound reliably: <entity> <channel> <soundlevel> <volume> <pitch> <flags> <x,y,z|-> \"<sample>\" [client,client,...]")
-{
-	if (g_pEngineSound == NULL || g_pGlobals == NULL) {
-		Warning("[Tickrate_Enabler] te_reliable_sound: engine sound interface or gpGlobals not available.\n");
-		return;
-	}
-
-	char error[256];
-	if (!EmitReliableSoundCommand(args, g_pEngineSound, g_pGlobals->maxClients, IsSoundRecipient, error, sizeof(error))) {
-		Warning("[Tickrate_Enabler] te_reliable_sound: %s\n", error);
-	}
-}
-#endif
-
 //---------------------------------------------------------------------------------
 // Purpose: called when the plugin is loaded, load the interface we need from the engine
 //---------------------------------------------------------------------------------
@@ -250,7 +203,6 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 	// Used only to verify boomer vomit patch offsets; patching still works without it.
 	CGlobalVars* pGlobals = NULL;
 	IPlayerInfoManager* pPlayerInfoManager = reinterpret_cast<IPlayerInfoManager*>(gameServerFactory(INTERFACEVERSION_PLAYERINFOMANAGER, NULL));
-	g_pPlayerInfoManager = pPlayerInfoManager;
 	if (pPlayerInfoManager != NULL) {
 		pGlobals = pPlayerInfoManager->GetGlobalVars();
 	} else {
@@ -286,8 +238,6 @@ bool L4DTickRate::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gam
 	LoadLagCompWindowFix();
 	LoadHitboxLagCompFixes();
 	LoadUpdateRateFix();
-	LoadReliableSound(interfaceFactory);
-	LoadSteamLogonFix();
 
 	for (size_t i = 0; i < g_iResetCvarsCount; i++) {
 		g_ResetCvars[i].ClearSavedDefaults();
@@ -326,13 +276,6 @@ void L4DTickRate::Unload(void)
 
 	m_patchManager.UnpatchAll();
 	m_patchManager.UnregisterAll();
-
-	if (g_bConVarsRegistered) {
-		ConVar_Unregister();
-		g_bConVarsRegistered = false;
-	}
-	g_pEngineSound = NULL;
-	g_pPlayerInfoManager = NULL;
 
 	m_optionalPatchManager.UnpatchAll();
 	m_optionalPatchManager.UnregisterAll();
@@ -564,70 +507,6 @@ void L4DTickRate::LoadUpdateRateFix()
 	}
 #else
 	TELog("Snapshot rate fix is only available on Linux servers (engine cap 100/s).");
-#endif
-#endif
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: registers te_reliable_sound. Disable with "-noreliablesound".
-//---------------------------------------------------------------------------------
-void L4DTickRate::LoadReliableSound(CreateInterfaceFn interfaceFactory)
-{
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
-	if (CommandLine()->CheckParm("-noreliablesound")) {
-		TELog("te_reliable_sound disabled by -noreliablesound.");
-		return;
-	}
-
-	g_pEngineSound = reinterpret_cast<IEngineSound*>(interfaceFactory(IENGINESOUND_SERVER_INTERFACE_VERSION, NULL));
-	if (g_pEngineSound == NULL || g_pGlobals == NULL) {
-		TELog("te_reliable_sound unavailable: 'IEngineSound' or gpGlobals not found.");
-		g_pEngineSound = NULL;
-		return;
-	}
-
-	g_pCVar = g_pCvar;
-	ConVar_Register(0);
-	g_bConVarsRegistered = true;
-	TELog("te_reliable_sound registered (-noreliablesound to disable).");
-#endif
-}
-
-#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
-// Every failed Steam auth response, kept or kicked, so the log shows what Steam answered and when.
-static void LogSteamAuthFailure(const char* name, const char* networkId, int response, bool validated, bool kept)
-{
-	TELog("Steam auth failure for \"%s\" (%s): code %d (%s), %s by Steam earlier -> %s.",
-		name, networkId, response, SteamAuthResponseName(response),
-		validated ? "validated" : "NOT validated",
-		kept ? "kept on the server (vanilla: \"No Steam logon\" kick)" : "kicked by the engine");
-}
-#endif
-
-//---------------------------------------------------------------------------------
-// Purpose: clients are no longer kicked with "No Steam logon" when Steam rejects their auth ticket
-// (responses 1, 6, 7, 8); every failed auth response is logged. Disable with "-nosteamlogonfix".
-// Linux only. Optional: a failure keeps the engine's kick.
-//---------------------------------------------------------------------------------
-void L4DTickRate::LoadSteamLogonFix()
-{
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
-	if (CommandLine()->CheckParm("-nosteamlogonfix")) {
-		TELog("\"No Steam logon\" kick fix disabled by -nosteamlogonfix.");
-		return;
-	}
-
-#if defined (_LINUX)
-	try {
-		ICodePatch* pPatch = new SteamLogonKickPatch(g_pEngine, LogSteamAuthFailure);
-		m_optionalPatchManager.Register(pPatch);
-		pPatch->Patch();
-		TELog("\"No Steam logon\" kicks disabled: clients stay when Steam rejects their auth ticket, failures are logged here (-nosteamlogonfix for vanilla).");
-	} catch (PatchException& e) {
-		TELog("\"No Steam logon\" kick fix disabled (engine kick kept): %s", e.GetDescription());
-	}
-#else
-	TELog("\"No Steam logon\" kick fix is only available on Linux servers.");
 #endif
 #endif
 }

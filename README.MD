@@ -4,8 +4,11 @@ A fork of **Tickrate Enabler** (originally by ProdigySim, maintained at
 [accelerator74/Tickrate-Enabler](https://github.com/accelerator74/Tickrate-Enabler)).
 Everything the original does is kept; this fork adds **L4D2 fixes for high tickrate servers**: common
 infected and witch fixes for a lowered `nb_update_frequency`, a real snapshot rate above 100 tick,
-lag compensated hitboxes, boomer vomit changes, reliable sounds and an option against "No Steam logon"
-kicks. See [What's new in this fork](#whats-new-in-this-fork).
+lag compensated hitboxes and boomer vomit changes. See [What's new in this fork](#whats-new-in-this-fork).
+
+Fixes that don't depend on the tickrate belong in [L4FixesVSP](https://github.com/KetherPL/L4FixesVSP):
+2.0.0 removed the `te_reliable_sound` command and the "No Steam logon" kick fix, which are moving there
+(see [Moved to L4FixesVSP](#moved-to-l4fixesvsp)).
 
 For the original project, its history and issues, please refer to the
 [upstream repository](https://github.com/accelerator74/Tickrate-Enabler).
@@ -25,8 +28,6 @@ L4D2 only (L4D1 builds behave exactly like upstream):
 | Change | Boomer vomit hits survivors 0.05 s after the vomit starts instead of 0.25 s | automatic, `-vomitdelay <seconds>` to change |
 | Change | Boomer vomit passes through survivors, so the survivors behind the first one get covered too (Linux) | automatic, `-novomitpierce` for vanilla |
 | Fix | Above 100 tick every client gets one snapshot per tick: the engine's hard cap of 100 snapshots/s follows the tickrate (e.g. 108/s at 108 tick, 128/s at 128 tick) (Linux) | automatic, `-noupdateratefix` for vanilla |
-| New | `te_reliable_sound` server command: plays a sound on the reliable stream so it can't be lost with a dropped packet (for plugins, e.g. spawn cues) | automatic, `-noreliablesound` to disable |
-| Change | Players are no longer kicked with "No Steam logon" when Steam rejects their auth ticket; every failed auth response is logged (Linux) | automatic, `-nosteamlogonfix` for vanilla |
 | Fix | Lag compensation tests hitboxes where the attacker saw the target: the cached bones are flushed when an entity is rewound and when it is put back (Linux) | automatic, `-nobonecachefix` for vanilla |
 | Fix | Bullets rewind the target's animation along with its position, as lag compensation was meant to (Linux) | automatic, `-nohitboxanimfix` for vanilla |
 | Option | Shoves can keep lag compensating their targets longer than the vanilla 5 ticks (50 ms at 100 tick) (Linux) | off by default, `-lagcompwindow <seconds>` |
@@ -38,8 +39,6 @@ The NextBot fixes can be disabled with the `-nonextbotfixes` launch parameter. D
 [NextBot fixes](#nextbot-fixes-l4d2-only), [Boomer vomit delay](#boomer-vomit-delay-l4d2-only),
 [Boomer vomit pierce](#boomer-vomit-pierce-l4d2-linux-only),
 [Snapshot rate above 100 tick](#snapshot-rate-above-100-tick-l4d2-linux-only),
-[Reliable sounds](#reliable-sounds-te_reliable_sound-l4d2-only),
-["No Steam logon" kicks](#no-steam-logon-kicks-l4d2-linux-only),
 [Lag compensated hitboxes](#lag-compensated-hitboxes-l4d2-linux-only) and
 [Lag compensation window](#lag-compensation-window-l4d2-linux-only-opt-in) below.
 
@@ -61,14 +60,8 @@ L4D2 (Linux): the boomer's vomit stream passes through survivors instead of stop
 L4D2 (Linux): above 100 tick, removes the engine's 100 snapshots per second cap so clients can get one
 snapshot every tick (see "Snapshot rate above 100 tick" below).
 
-L4D2: adds the `te_reliable_sound` server command, which sends a sound over the reliable stream so packet
-loss can't drop it (see "Reliable sounds" below).
-
 L4D2 (Linux): lag compensation tests shots against hitboxes posed where the shooter saw the target
 (see "Lag compensated hitboxes" below).
-
-L4D2 (Linux): players are no longer kicked with "No Steam logon" when Steam rejects their auth ticket
-(see "No Steam logon kicks" below).
 
 Removes global upper-limits on the max client data rate (was 30000),
 and removes the (30k) limits on rate control cvars:
@@ -90,10 +83,6 @@ and removes the (30k) limits on rate control cvars:
     Optional (L4D2, Linux): "-novomitpierce" restores the vanilla vomit stream that stops at the first survivor.
 
     Optional (L4D2, Linux): "-noupdateratefix" keeps the engine's 100 snapshots/s cap above 100 tick.
-
-    Optional (L4D2): "-noreliablesound" doesn't register the `te_reliable_sound` command.
-
-    Optional (L4D2, Linux): "-nosteamlogonfix" restores the engine's "No Steam logon" kicks.
 
     Optional (L4D2, Linux): "-nobonecachefix" and "-nohitboxanimfix" restore the vanilla hitbox lag
     compensation (see "Lag compensated hitboxes" below).
@@ -196,54 +185,6 @@ At 100 tick or below nothing is patched. `-noupdateratefix` keeps the engine's c
 written to the log; if the code can't be located after a game update, the cap stays at 100 and a console
 message explains why.
 
-### Reliable sounds (te_reliable_sound, L4D2 only)
-
-Every sound the game or SourceMod plays is unreliable: it is sent once, inside the next snapshot, and a
-lost packet loses it for good. `te_reliable_sound` makes the engine send the sound on the reliable stream
-(retransmitted until it arrives) to each recipient right away:
-
-    te_reliable_sound <entity> <channel 0-7> <soundlevel 0-255> <volume 0-1> <pitch 1-255> <flags> <x,y,z|-> "<sample>" [client,client,...]
-
-`entity` is the source (0 = world), `-` instead of an origin uses the entity's own position, and the
-optional client list (indices) limits the recipients; by default every connected human and SourceTV get
-it. The arguments match `EmitSound` / a SourceMod normal sound hook, so a hooked sound can be re-emitted
-unchanged, only reliably. Only the server (console, rcon, plugins via `ServerCommand`) can run it.
-
-- The sample must already be precached (the command never precaches; an unknown sample is rejected with
-  a console message). Put it in quotes, as above.
-- To make a hooked sound reliable, block it in the hook (`Plugin_Stop`) and run `te_reliable_sound` on the
-  next frame. Returning `Plugin_Changed` from a SourceMod sound hook re-emits the sound through SourceMod,
-  which is never reliable.
-- `-noreliablesound` doesn't register the command.
-
-### "No Steam logon" kicks (L4D2, Linux only)
-
-Steam answers every connecting client's auth ticket, and the engine kicks the client with "No Steam logon"
-when the answer is one of: 1 (user not connected to Steam), 6 (ticket canceled), 7 (ticket already used)
-or 8 (ticket invalid). Players who are logged in to Steam get these too, e.g. after joining from a lobby,
-and then keep getting them until they restart the game or Steam (reported in
-[ValveSoftware/Source-1-Games#7758](https://github.com/ValveSoftware/Source-1-Games/issues/7758)).
-
-With the patch those four answers no longer kick: the client stays and the failure is written to the log,
-e.g.
-
-    Steam auth failure for "Player" (STEAM_1:0:12345): code 8 (AuthTicketInvalid), validated by Steam earlier -> kept on the server (vanilla: "No Steam logon" kick).
-
-Every other failed answer (no license, VAC ban, account used elsewhere, VAC check timeout) is logged the
-same way and still kicked by the engine.
-
-What it costs: the server stops enforcing those answers.
-
-- A client Steam validated earlier in the connection ("validated" in the log) keeps its verified Steam ID;
-  nothing changes for it.
-- A client Steam never validated ("NOT validated") stays on the server with the Steam ID its own ticket
-  claims. The engine still reports it as not authenticated, so SourceMod doesn't authorize it: no admin
-  rights and no `OnClientAuthorized` / `OnClientPostAdminCheck`, which also means SourceMod-side ban checks
-  don't run for it. Someone without a valid Steam session can therefore stay and play.
-
-`-nosteamlogonfix` keeps the engine's kicks (failed answers are then not logged by the plugin). If the
-code can't be located after a game update, the kicks stay and a console message explains why.
-
 ### Lag compensated hitboxes (L4D2, Linux only)
 
 When a player shoots, the server moves the other players and infected back to where that player saw
@@ -290,7 +231,27 @@ This is vanilla behaviour and competitive players are used to it, so **nothing c
 current tickrate (never fewer than the vanilla 5, at most 127), e.g. `-lagcompwindow 0.1` gives 11 usercmds
 at 108 tick. The applied window is written to the log. Linux servers only.
 
+### Moved to L4FixesVSP
+
+2.0.0 removed two features that don't depend on the tickrate. They are moving to
+[L4FixesVSP](https://github.com/KetherPL/L4FixesVSP), a separate Valve Server Plugin for L4D2 engine
+fixes, in [KetherPL/L4FixesVSP#1](https://github.com/KetherPL/L4FixesVSP/pull/1) (not merged yet):
+
+- `te_reliable_sound` (added in 1.8.0): same name and arguments, so plugins that use it keep working once
+  L4FixesVSP is installed. Without it the command doesn't exist.
+- The "No Steam logon" kick fix (added in 1.9.0). L4FixesVSP takes the engine's own "keep the client"
+  path instead of redirecting the call into the plugin; the engine still logs every failed auth answer
+  (`STEAMAUTH: Client ... received failure code ...`).
+
+`-noreliablesound` and `-nosteamlogonfix` no longer do anything. To keep both features, install an
+L4FixesVSP build that contains them next to this plugin, or stay on 1.9.0 until one is released.
+
 ### Changelog / TODO
+
+2.0.0 (Remastered fork):
+- `te_reliable_sound` and the "No Steam logon" kick fix are removed; they move to
+  [L4FixesVSP](https://github.com/KetherPL/L4FixesVSP). `-noreliablesound` and `-nosteamlogonfix` are
+  gone. Servers that use either feature need L4FixesVSP (see [Moved to L4FixesVSP](#moved-to-l4fixesvsp)).
 
 1.9.0 (Remastered fork):
 - L4D2 (Linux): players are no longer kicked with "No Steam logon" when Steam rejects their auth ticket;

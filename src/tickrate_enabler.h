@@ -113,8 +113,6 @@ private:
 	void					LoadLagCompWindowFix();
 	void					LoadHitboxLagCompFixes();
 	void					LoadUpdateRateFix();
-	void					LoadReliableSound(CreateInterfaceFn interfaceFactory);
-	void					LoadSteamLogonFix();
 
 	PatchManager m_patchManager;
 	PatchManager m_optionalPatchManager; // NextBot fixes, vomit delay / pierce; failures are not fatal

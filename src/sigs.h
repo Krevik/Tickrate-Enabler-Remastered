@@ -260,55 +260,6 @@ const int g_FrameTimeReadOffsets[] =
 	#define UPDATERATE_GAMECLIENT_CODE_SIZE (UPDATERATE_GAMECLIENT_JMP_OFFSET + 5)
 #endif
 
-/* engine: CSteam3Server::OnValidateAuthTicketResponse(ValidateAuthTicketResponse_t*) gets Steam's answer to
-   a client's auth ticket. A failed answer goes to OnValidateAuthTicketResponseHelper(client, response),
-   which kicks the client ("No Steam logon" for responses 1, 6, 7 and 8). L4D2 linux only (engine_srv.so). */
-#if SOURCE_ENGINE == SE_LEFT4DEAD2 && defined (_LINUX)
-	#define SYM_CSTEAM3SERVER_ONVALIDATEAUTHTICKETRESPONSE "_ZN13CSteam3Server28OnValidateAuthTicketResponseEP28ValidateAuthTicketResponse_t"
-	#define SYM_CSTEAM3SERVER_ONVALIDATEAUTHTICKETRESPONSEHELPER "_ZN13CSteam3Server34OnValidateAuthTicketResponseHelperEP11CBaseClient20EAuthSessionResponse"
-
-	// The symbol is a short wrapper; the function's code is in a separate part (".part.NN") it jumps to.
-	// 8B 88 98 00 00 00		mov ecx, [eax+98h]				(server mode)
-	// 85 C9 7E 06			test ecx, ecx; jle +6
-	// 5D					pop ebp
-	// E9 <rel32>				jmp <body>
-	#define STEAMAUTH_WRAPPER_TAIL_OFFSET 0x10
-	DEFINE_SIG(STEAMAUTH_WRAPPER_TAIL_BYTES, "\x8B\x88\x98\x00\x00\x00\x85\xC9\x7E\x06\x5D\xE9");
-	#define STEAMAUTH_WRAPPER_JMP_OFFSET 0x1B
-	#define STEAMAUTH_WRAPPER_CODE_SIZE (STEAMAUTH_WRAPPER_JMP_OFFSET + 5)
-
-	// Offsets into the body. ebx = client (CBaseClient*), esi = the response struct, edi = this.
-	// 8B 46 08				mov eax, [esi+8]				(m_eAuthSessionResponse)
-	// 85 C0 0F 85 D4 00 00 00	test eax, eax; jnz <failure>
-	#define STEAMAUTH_BODY_RESPONSE_OFFSET 0x31
-	DEFINE_SIG(STEAMAUTH_BODY_RESPONSE_BYTES, "\x8B\x46\x08\x85\xC0\x0F\x85\xD4\x00\x00\x00");
-
-	// C6 83 17 02 00 00 01	mov byte ptr [ebx+217h], 1		(client->m_bFullyAuthenticated = true)
-	#define STEAMAUTH_BODY_AUTHENTICATED_OFFSET 0xAC
-	DEFINE_SIG(STEAMAUTH_BODY_AUTHENTICATED_BYTES, "\xC6\x83\x17\x02\x00\x00\x01");
-	#define STEAMAUTH_CLIENT_FULLYAUTHENTICATED_OFFSET 0x217
-
-	// 89 44 24 08			mov [esp+8], eax				(response)
-	// 89 5C 24 04			mov [esp+4], ebx				(client)
-	// 89 3C 24				mov [esp], edi					(this)
-	// E8 <rel32>				call OnValidateAuthTicketResponseHelper
-	#define STEAMAUTH_BODY_FAILURE_OFFSET 0x110
-	DEFINE_SIG(STEAMAUTH_BODY_FAILURE_BYTES, "\x89\x44\x24\x08\x89\x5C\x24\x04\x89\x3C\x24\xE8");
-	#define STEAMAUTH_BODY_HELPER_CALL_OFFSET 0x11B
-
-	// 89 1C 24 FF 50 2C		mov [esp], ebx; call [eax+2Ch]	(client->GetNetworkIDString())
-	#define STEAMAUTH_BODY_NETWORKID_OFFSET 0x128
-	DEFINE_SIG(STEAMAUTH_BODY_NETWORKID_BYTES, "\x89\x1C\x24\xFF\x50\x2C");
-	#define STEAMAUTH_BODY_CODE_SIZE (STEAMAUTH_BODY_NETWORKID_OFFSET + STEAMAUTH_BODY_NETWORKID_BYTES_SIZE)
-
-	// OnValidateAuthTicketResponseHelper:
-	// 8B 5D 0C 8B 75 10 8B 7D 08	mov ebx, [ebp+0Ch]; mov esi, [ebp+10h]; mov edi, [ebp+8]	(client, response, this)
-	// 8B 03 89 1C 24 FF 50 1C	mov eax, [ebx]; mov [esp], ebx; call [eax+1Ch]			(client->GetClientName())
-	#define STEAMAUTH_HELPER_ARGS_OFFSET 0x9
-	DEFINE_SIG(STEAMAUTH_HELPER_ARGS_BYTES, "\x8B\x5D\x0C\x8B\x75\x10\x8B\x7D\x08\x8B\x03\x89\x1C\x24\xFF\x50\x1C");
-	#define STEAMAUTH_HELPER_CODE_SIZE (STEAMAUTH_HELPER_ARGS_OFFSET + STEAMAUTH_HELPER_ARGS_BYTES_SIZE)
-#endif
-
 
 #if defined (_WIN32)
 	#if SOURCE_ENGINE == SE_LEFT4DEAD
